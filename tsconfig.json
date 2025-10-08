@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "strict": false,
+    "jsx": "react",
+    "target": "ES2022",
+    "module": "esnext",
+    "moduleResolution": "node",
+    "allowSyntheticDefaultImports": true,
+    "lib": [
+      "ES2022",
+      "dom"
+    ],
+    "outDir": "dist",
+    "pretty": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "declaration": true,
+    "tsBuildInfoFile": "./node_modules/build.tsbuildinfo"
+  },
+  "typeAcquisition": {
+    "enable": true
+  },
+  "exclude": [
+    "node_modules"
+  ]
+}
