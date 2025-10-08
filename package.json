@@ -34,7 +34,7 @@
     "uuid": "^9.0.0"
   },
   "devDependencies": {
-    "@modusoperandi/licit-doc-attrs-step": "1.0.2",
+    "@modusoperandi/licit-doc-attrs-step": "1.0.5",
     "@modusoperandi/eslint-config": "^2.1.4",
     "@types/jest": "^29.5.2",
     "@types/node": "^18.7.22",
