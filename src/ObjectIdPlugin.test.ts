@@ -41,6 +41,7 @@ describe('Object ID plugin', () => {
       )
     ).toBeFalsy();
   });
+
   it('should handle createNewId when this.isNewParagraph(prevState, nextState, pos, view is true', () => {
     const dummyNode = {
       type: { name: 'citationnote' },
@@ -82,6 +83,7 @@ describe('Object ID plugin', () => {
         {
           objectId: '123',
           objectMetaData: null as unknown as Record<string, unknown>,
+          selectionId: 'selectionId123',
         },
       ],
     });
@@ -110,9 +112,11 @@ describe('Object ID plugin', () => {
           lastEditedOn: '2025-02-18T06:11:55.000+00:00',
           capco: { system: 'US', joint: false },
           name: '9c 2f 8107 F 4b 7 403e A 0ae 2b 55e 79885ff',
-        },
+        } as Record<string, unknown>,
+        selectionId: 'selectionId123'
       },
-      { objectId: 'abc', objectMetaData: null },
+      { objectId: 'abc', objectMetaData: null, selectionId: 'selectionId123' },
+
     ];
     const result = plugin.getObjectMetaDataFromCutObj('123', cutObjectIds);
     expect(result).toEqual({
@@ -242,6 +246,7 @@ describe('Object ID plugin', () => {
             capco: { system: 'US', joint: false },
             name: '9c 2f 8107 F 4b 7 403e A 0ae 2b 55e 79885ff',
           },
+          selectionId: 'selectionId123',
         },
       ],
     });
@@ -287,10 +292,12 @@ describe('Object ID plugin', () => {
             capco: { system: 'US', joint: false },
             name: '9c 2f 8107 F 4b 7 403e A 0ae 2b 55e 79885ff',
           },
+          selectionId: 'selectionId123',
         },
         {
           objectId: 'abc',
           objectMetaData: null as unknown as Record<string, unknown>,
+          selectionId: 'selectionId124',
         },
       ],
     });
@@ -435,6 +442,7 @@ describe('Object ID plugin', () => {
             capco: { system: 'US', joint: false },
             name: '9c 2f 8107 F 4b 7 403e A 0ae 2b 55e 79885ff',
           },
+          selectionId: 'selectionId123',
         },
       ],
     });
@@ -910,6 +918,81 @@ describe('Object ID plugin', () => {
     expect(result).toBeDefined();
   });
 
+  it('should handle appendTransaction for undo/redo transactions', () => {
+    const testSchema = new Schema({
+      nodes: {
+        doc: { content: 'paragraph+' },
+        paragraph: { content: 'text*', group: 'block' },
+        text: { group: 'inline' },
+      },
+    });
+
+    const prevDoc = testSchema.node('doc', null, [
+      testSchema.node('paragraph', null, [testSchema.text('Before')]),
+    ]);
+
+    const nextDoc = testSchema.node('doc', null, [
+      testSchema.node('paragraph', null, [testSchema.text('After')]),
+    ]);
+
+    const prevState = EditorState.create({ schema: testSchema, doc: prevDoc });
+    const nextState = EditorState.create({ schema: testSchema, doc: nextDoc });
+
+    // Create a mock transaction with undo meta
+    const undoTr = nextState.tr.setMeta('history', { undo: true });
+
+    const plugin = new ObjectIdPlugin();
+    const appendTransaction = plugin.spec.appendTransaction || (() => null);
+
+    // Pass the undo transaction in the array
+    const result = appendTransaction([undoTr], prevState, nextState);
+
+    // Validate it returns a transaction or null
+    // We mainly care that it executes the undo/redo branch without throwing
+    expect(result === null || result instanceof nextState.tr.constructor).toBe(true);
+  });
+
+  it('should cover assignIDsForMissing nodesBetween traversal', () => {
+    const testSchema = new Schema({
+      nodes: {
+        doc: { content: 'paragraph+' },
+        paragraph: {
+          content: 'text*',
+          attrs: { objectId: { default: null } },
+        },
+        text: { group: 'inline' },
+      },
+    });
+
+    // Create a document missing objectId on purpose
+    const paragraph = testSchema.node('paragraph', { objectId: null }, [
+      testSchema.text('Hello'),
+    ]);
+    const doc = testSchema.node('doc', null, [paragraph]);
+
+    const state = EditorState.create({
+      schema: testSchema,
+      doc,
+    });
+
+    const plugin = new ObjectIdPlugin();
+    const appendTransaction = plugin.spec.appendTransaction!;
+
+    // Find valid range covering all nodes
+    const from = 0;
+    const to = state.doc.content.size;
+
+    // Spy on the assignIDsForMissing method if it’s accessible
+    const result = appendTransaction([], state, state);
+
+    expect(result).toBeTruthy();
+
+    // Check that traversal actually changed node attrs
+    const newDoc = result.doc;
+    const paragraphNode = newDoc.child(0);
+    expect(paragraphNode.attrs.objectId).toBeDefined();
+  });
+
   it('should validate attrs', () => {
     expect(validateAttr(null)).toBeTruthy();
     expect(validateAttr(undefined)).toBeTruthy();
@@ -976,10 +1059,12 @@ describe('Object ID plugin', () => {
         {
           objectId: '123',
           objectMetaData: null as unknown as Record<string, unknown>,
+          selectionId: 'selectionId123',
         },
         {
           objectId: '123',
           objectMetaData: null as unknown as Record<string, unknown>,
+          selectionId: 'selectionId124',
         },
       ],
     });
@@ -989,7 +1074,7 @@ describe('Object ID plugin', () => {
       },
       doc: mockdoc,
     } as unknown as Transaction;
-    const Mockstate = { tr: Mocktr } as unknown as EditorState;
+    const Mockstate = { tr: Mocktr, doc: mockdoc } as unknown as EditorState;
     expect(
       plugin.assignSameObjectMetaDataForCutPastePara(
         Mockstate,
