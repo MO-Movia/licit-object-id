@@ -1,4 +1,8 @@
-// Plugin to handle automatic assign unique id to the block nodes.
+/**
+ * @license 
+ * @copyright Copyright (c) 2024 Modus Operandi, Inc. All rights reserved.
+ */
+
 import {
   EditorState,
   Plugin,
@@ -18,7 +22,6 @@ import {
   AttributeSpec,
   NodeType,
 } from 'prosemirror-model';
-import { v4 } from 'uuid';
 const SPEC = 'spec';
 const ATTR_OBJID = 'objectId';
 const ATTR_OBJMETADATA = 'objectMetaData';
@@ -54,6 +57,11 @@ interface CutObjectInfo {
   objectId: string;
   objectMetaData: Record<string, unknown>;
   selectionId: string;
+}
+
+export interface Ranges {
+  from: number;
+  to: number;
 }
 
 export const ObjectIdPluginKey = new PluginKey('ObjectIdPlugin');
@@ -134,41 +142,34 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
       },
 
       appendTransaction: (transactions: Transaction[], prevState: EditorState, nextState: EditorState) => {
-        const self = this;
-        let tr = null;
+        let tr: Transaction | null = null;
 
         //  Skip recursion for plugin-generated transactions
-        if (transactions.some(tr => tr.getMeta('skipAppendTransaction'))) {
+        if (this.shouldSkipAppend(transactions)) {
           return null;
         }
-
         // Detect undo/redo transactions
-        const isUndoOrRedo = transactions.some(
-          tr => tr.getMeta('history')?.undo || tr.getMeta('history')?.redo
-        );
-
-        const docChanged = self.isDocChanged(transactions);
-
+        const isUndoOrRedo = this.isUndoOrRedo(transactions);
+        // Detect document has any changes
+        const docChanged = this.isDocChanged(transactions);
         // Handle Undo/Redo: skip heavy re-scan logic
         if (isUndoOrRedo) {
           // Do lightweight updates only (no full assignIDsForMissing)
-          tr = self.trackDeletedObjectId(prevState, nextState, tr);
-          tr = self.setDirtyFlagOnChange(prevState, nextState, tr, docChanged);
-          if (tr && nextState.tr) tr.storedMarks = nextState.tr.storedMarks;
+          tr = this.handleUndoRedo(prevState, nextState, tr, docChanged);
           return tr && tr.docChanged ? tr : null;
         }
 
         // Normal (non-undo) flow
         if (!this.loaded || docChanged) {
           this.loaded = true;
-          tr = self.assignIDsForMissing(transactions, prevState, nextState, this.view);
+          tr = this.assignIDsForMissing(transactions, prevState, nextState, this.view);
 
           if (this.pastedPara?.content?.childCount > 1) {
-            tr = self.assignSameObjectMetaDataForCutPastePara(nextState, tr);
+            tr = this.assignSameObjectMetaDataForCutPastePara(nextState, tr);
           }
 
-          tr = self.trackDeletedObjectId(prevState, nextState, tr);
-          tr = self.setDirtyFlagOnChange(prevState, nextState, tr, docChanged);
+          tr = this.trackDeletedObjectId(prevState, nextState, tr);
+          tr = this.setDirtyFlagOnChange(prevState, nextState, tr, docChanged);
 
           if (tr && nextState.tr) {
             tr.storedMarks = nextState.tr.storedMarks;
@@ -254,11 +255,11 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     return trans;
   }
 
-  getChangedRanges(transactions) {
-    const ranges = [];
+  getChangedRanges(transactions): Ranges[] {
+    const ranges: Ranges[] = [];
     for (const tr of transactions) {
       tr.mapping.maps.forEach(map => {
-        map.forEach((oldStart, oldEnd, newStart, newEnd) => {
+        map.forEach((newStart, newEnd) => {
           ranges.push({ from: newStart, to: newEnd });
         });
       });
@@ -266,6 +267,17 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     return ranges;
   }
 
+  handleUndoRedo(
+    prevState: EditorState,
+    nextState: EditorState,
+    tr: Transaction | null,
+    docChanged: boolean
+  ): Transaction | null {
+    tr = this.trackDeletedObjectId(prevState, nextState, tr);
+    tr = this.setDirtyFlagOnChange(prevState, nextState, tr, docChanged);
+    if (tr && nextState.tr) tr.storedMarks = nextState.tr.storedMarks;
+    return tr;
+  }
   assignIDsForMissing(
     transactions: Transaction[],
     prevState: EditorState,
@@ -325,7 +337,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     return modified ? tr : null;
   }
 
-  mergeRanges(ranges) {
+  mergeRanges(ranges: Ranges[]): Ranges[] {
     if (!ranges.length) return [];
     ranges.sort((a, b) => a.from - b.from);
     const merged = [ranges[0]];
@@ -341,6 +353,15 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     }
     return merged;
   }
+
+  shouldSkipAppend(transactions: Transaction[]): boolean {
+    return transactions.some(tr => tr.getMeta('skipAppendTransaction'));
+  }
+
+  isUndoOrRedo(transactions: Transaction[]): boolean {
+    return transactions.some(tr => tr.getMeta('history')?.undo || tr.getMeta('history')?.redo);
+  }
+
 
   isRequiredNewId(
     node: Node,

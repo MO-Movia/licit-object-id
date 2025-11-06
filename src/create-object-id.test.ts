@@ -1,3 +1,8 @@
+/**
+ * @license 
+ * @copyright Copyright (c) 2024 Modus Operandi, Inc. All rights reserved.
+ */
+
 import { createObjectId } from './create-object-id';
 
 describe('createObjectId', () => {
