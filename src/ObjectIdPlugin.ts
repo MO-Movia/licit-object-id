@@ -287,6 +287,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     let tr = nextState.tr;
     let modified = false;
     const objIds = [];
+    const rangePos = [];
     const { prefix, suffix } = this.getState(nextState) || {};
 
     // Adds a unique id to the document
@@ -314,19 +315,22 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
 
       try {
         nextState.doc.nodesBetween(from, to, (node, pos) => {
-          const required = this.isRequiredNewId(
-            node,
-            objIds,
-            view,
-            prevState,
-            nextState,
-            pos
-          );
-          if (node.isTextblock && required) {
-            const newId = createObjectId(prefix, suffix);
-            objIds.push(newId)
-            tr.setNodeMarkup(pos, undefined, { ...node.attrs, [ATTR_OBJID]: newId });
-            modified = true;
+          if (!rangePos.includes(pos)) {
+            rangePos.push(pos);
+            const required = this.isRequiredNewId(
+              node,
+              objIds,
+              view,
+              prevState,
+              nextState,
+              pos
+            );
+            if (node.isTextblock && required) {
+              const newId = createObjectId(prefix, suffix);
+              objIds.push(newId)
+              tr.setNodeMarkup(pos, undefined, { ...node.attrs, [ATTR_OBJID]: newId });
+              modified = true;
+            }
           }
         });
       } catch (err) {
