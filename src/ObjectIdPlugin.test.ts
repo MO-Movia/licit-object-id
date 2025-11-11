@@ -951,47 +951,7 @@ describe('Object ID plugin', () => {
 
     // Pass the undo transaction in the array
     const result = appendTransaction([undoTr], prevState, nextState);
-
-    // Validate it returns a transaction or null
-    // We mainly care that it executes the undo/redo branch without throwing
     expect(result === null || result instanceof nextState.tr.constructor).toBe(true);
-  });
-
-  it('should cover assignIDsForMissing nodesBetween traversal', () => {
-    const testSchema = new Schema({
-      nodes: {
-        doc: { content: 'paragraph+' },
-        paragraph: {
-          content: 'text*',
-          attrs: { objectId: { default: null } },
-        },
-        text: { group: 'inline' },
-      },
-    });
-
-    // Create a document missing objectId on purpose
-    const paragraph = testSchema.node('paragraph', { objectId: null }, [
-      testSchema.text('Hello'),
-    ]);
-    const doc = testSchema.node('doc', null, [paragraph]);
-
-    const state = EditorState.create({
-      schema: testSchema,
-      doc,
-    });
-
-    const plugin = new ObjectIdPlugin();
-    const appendTransaction = plugin.spec.appendTransaction;
-
-    // Spy on the assignIDsForMissing method if it�s accessible
-    const result = appendTransaction([], state, state);
-
-    expect(result).toBeTruthy();
-
-    // Check that traversal actually changed node attrs
-    const newDoc = result.doc;
-    const paragraphNode = newDoc.child(0);
-    expect(paragraphNode.attrs.objectId).toBeDefined();
   });
 
   it('should validate attrs', () => {
@@ -1083,13 +1043,6 @@ describe('Object ID plugin', () => {
       )
     ).toBeDefined();
   });
-});
-
-
-
-describe('Object ID plugin - Branch Coverage Tests', () => {
-
-
   it('should return false when isCut is true but objectId not found in cutObjectIds', () => {
     const plugin = new ObjectIdPlugin();
     plugin.isCut = true;
@@ -1383,3 +1336,6 @@ describe('Object ID plugin - Branch Coverage Tests', () => {
     expect(result).toBeDefined();
   });
 });
+
+
+

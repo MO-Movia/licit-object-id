@@ -142,27 +142,58 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
       },
 
       appendTransaction: (transactions: Transaction[], prevState: EditorState, nextState: EditorState) => {
-        let tr: Transaction | null = null;
+        let tr: Transaction = null;
 
         //  Skip recursion for plugin-generated transactions
         if (this.shouldSkipAppend(transactions)) {
           return null;
         }
-        // Detect undo/redo transactions
-        const isUndoOrRedo = this.isUndoOrRedo(transactions);
-        // Detect document has any changes
         const docChanged = this.isDocChanged(transactions);
+        if (!docChanged && this.loaded) {
+          return null;
+        }
+
+        // Separate undo/redo from regular transactions
+        const undoRedoTransactions = transactions.filter(t =>
+          t.getMeta('history')?.undo || t.getMeta('history')?.redo
+        );
+        const regularTransactions = transactions.filter(t =>
+          !t.getMeta('history')?.undo && !t.getMeta('history')?.redo
+        );
+
+        // Detect document has any changes
+
         // Handle Undo/Redo: skip heavy re-scan logic
-        if (isUndoOrRedo) {
-          // Do lightweight updates only (no full assignIDsForMissing)
+        // Process both types if present
+        if (undoRedoTransactions.length > 0) {
           tr = this.handleUndoRedo(prevState, nextState, tr, docChanged);
-          return tr && tr.docChanged ? tr : null;
         }
 
         // Normal (non-undo) flow
-        if (!this.loaded || docChanged) {
+        // if (!this.loaded || docChanged) {
+        //   this.loaded = true;
+        //   tr = this.assignIDsForMissing(transactions, prevState, nextState, this.view);
+
+        //   if (this.pastedPara?.content?.childCount > 1) {
+        //     tr = this.assignSameObjectMetaDataForCutPastePara(nextState, tr);
+        //   }
+
+        //   tr = this.trackDeletedObjectId(prevState, nextState, tr);
+        //   tr = this.setDirtyFlagOnChange(prevState, nextState, tr, docChanged);
+
+        //   if (tr && nextState.tr) {
+        //     tr.storedMarks = nextState.tr.storedMarks;
+        //   }
+
+        //   if (tr?.docChanged) {
+        //     // Prevent infinite loops
+        //     tr.setMeta('skipAppendTransaction', true);
+        //     return tr;
+        //   }
+        // }
+        if (regularTransactions.length > 0 && (!this.loaded || docChanged)) {
           this.loaded = true;
-          tr = this.assignIDsForMissing(transactions, prevState, nextState, this.view);
+          tr = this.assignIDsForMissing(regularTransactions, prevState, nextState, this.view);
 
           if (this.pastedPara?.content?.childCount > 1) {
             tr = this.assignSameObjectMetaDataForCutPastePara(nextState, tr);
@@ -170,18 +201,15 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
 
           tr = this.trackDeletedObjectId(prevState, nextState, tr);
           tr = this.setDirtyFlagOnChange(prevState, nextState, tr, docChanged);
-
-          if (tr && nextState.tr) {
-            tr.storedMarks = nextState.tr.storedMarks;
-          }
-
-          if (tr?.docChanged) {
-            // Prevent infinite loops
-            tr.setMeta('skipAppendTransaction', true);
-            return tr;
-          }
+        }
+        if (tr && nextState.tr) {
+          tr.storedMarks = nextState.tr.storedMarks;
         }
 
+        if (tr?.docChanged) {
+          tr.setMeta('skipAppendTransaction', true);
+          return tr;
+        }
         return null;
       },
 
@@ -613,7 +641,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
       // on document load the last paragraph becomes dirty, to avoid that we check the position between the two paragraphs
       isOnLoad = para.pos - para1.pos > 3;
     }
-    if (para && docChanged && !isDirty && !para.node.attrs.dirty && !isOnLoad) {
+    if (para && docChanged && !isOnLoad && (!isDirty && !para.node.attrs.dirty)) {
       tr ??= nextState.tr;
       tr = tr.setNodeMarkup(para.pos, null, {
         ...para.node.attrs,
