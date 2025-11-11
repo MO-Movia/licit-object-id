@@ -148,6 +148,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
         if (this.shouldSkipAppend(transactions)) {
           return null;
         }
+        // Detect document has any changes
         const docChanged = this.isDocChanged(transactions);
         if (!docChanged && this.loaded) {
           return null;
@@ -161,36 +162,9 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
           !t.getMeta('history')?.undo && !t.getMeta('history')?.redo
         );
 
-        // Detect document has any changes
-
-        // Handle Undo/Redo: skip heavy re-scan logic
-        // Process both types if present
         if (undoRedoTransactions.length > 0) {
           tr = this.handleUndoRedo(prevState, nextState, tr, docChanged);
         }
-
-        // Normal (non-undo) flow
-        // if (!this.loaded || docChanged) {
-        //   this.loaded = true;
-        //   tr = this.assignIDsForMissing(transactions, prevState, nextState, this.view);
-
-        //   if (this.pastedPara?.content?.childCount > 1) {
-        //     tr = this.assignSameObjectMetaDataForCutPastePara(nextState, tr);
-        //   }
-
-        //   tr = this.trackDeletedObjectId(prevState, nextState, tr);
-        //   tr = this.setDirtyFlagOnChange(prevState, nextState, tr, docChanged);
-
-        //   if (tr && nextState.tr) {
-        //     tr.storedMarks = nextState.tr.storedMarks;
-        //   }
-
-        //   if (tr?.docChanged) {
-        //     // Prevent infinite loops
-        //     tr.setMeta('skipAppendTransaction', true);
-        //     return tr;
-        //   }
-        // }
         if (regularTransactions.length > 0 && (!this.loaded || docChanged)) {
           this.loaded = true;
           tr = this.assignIDsForMissing(regularTransactions, prevState, nextState, this.view);
