@@ -1,6 +1,6 @@
 /**
- * @license 
- * @copyright Copyright (c) 2024 Modus Operandi, Inc. All rights reserved.
+ * @license MIT
+ * @copyright Copyright 2025 Modus Operandi Inc. All Rights Reserved.
  */
 
 export * from './ObjectIdPlugin';
