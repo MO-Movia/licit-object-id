@@ -1,4 +1,8 @@
-// Plugin to handle automatic assign unique id to the block nodes.
+/**
+ * @license MIT
+ * @copyright Copyright 2025 Modus Operandi Inc. All Rights Reserved.
+ */
+
 import {
   EditorState,
   Plugin,
@@ -18,13 +22,14 @@ import {
   AttributeSpec,
   NodeType,
 } from 'prosemirror-model';
-
 const SPEC = 'spec';
 const ATTR_OBJID = 'objectId';
 const ATTR_OBJMETADATA = 'objectMetaData';
 const ATTR_DIRTY = 'dirty';
-const NEWATTRS = [ATTR_OBJID, ATTR_OBJMETADATA, ATTR_DIRTY];
+const ATTR_SELECTIONID = 'selectionId';
+const NEWATTRS = [ATTR_OBJID, ATTR_OBJMETADATA, ATTR_DIRTY, ATTR_SELECTIONID];
 const ENTERKEYCODE = 13;
+const BACKSPACEKEYCODE = 8;
 const ATTR_DELETEDOBJIDS = 'deletedObjectIds';
 const DOC_NAME = 'doc';
 
@@ -51,6 +56,12 @@ interface IdConfig {
 interface CutObjectInfo {
   objectId: string;
   objectMetaData: Record<string, unknown>;
+  selectionId: string;
+}
+
+export interface Ranges {
+  from: number;
+  to: number;
 }
 
 export const ObjectIdPluginKey = new PluginKey('ObjectIdPlugin');
@@ -91,6 +102,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
                 this.getState(view.state)?.cutObjectIds.push({
                   objectId: node.attrs[ATTR_OBJID],
                   objectMetaData: node.attrs[ATTR_OBJMETADATA],
+                  selectionId: node.attrs[ATTR_SELECTIONID],
                 });
               }
             });
@@ -128,33 +140,53 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
           return false;
         },
       },
-      appendTransaction: (
-        transactions: Transaction[],
-        prevState: EditorState,
-        nextState: EditorState
-      ) => {
-        if (transactions.some((tr) => tr.getMeta('skipAppendTransaction'))) {
+
+      appendTransaction: (transactions: Transaction[], prevState: EditorState, nextState: EditorState) => {
+        let tr: Transaction = null;
+
+        //  Skip recursion for plugin-generated transactions
+        if (this.shouldSkipAppend(transactions)) {
           return null;
         }
-        let tr: Transaction | null = null;
-        const self = this as ObjectIdPlugin;
-        const docChanged = self.isDocChanged(transactions);
-        if (!this.loaded || docChanged) {
-          this.loaded = true;
-          tr = self.assignIDsForMissing(prevState, nextState, this.view);
-          if (this.pastedPara?.content?.childCount > 1) {
-            tr = self.assignSameObjectMetaDataForCutPastePara(nextState, tr);
-          }
-          tr = self.trackDeletedObjectId(prevState, nextState, tr);
-          tr = self.setDirtyFlagOnChange(prevState, nextState, tr, docChanged);
-          // Restore the stored marks here
-          // otherwise the stored marks will be lost
-          if (tr && nextState.tr) {
-            tr.storedMarks = nextState.tr.storedMarks;
-          }
+        // Detect document has any changes
+        const docChanged = this.isDocChanged(transactions);
+        if (!docChanged && this.loaded) {
+          return null;
         }
-        return tr;
+
+        // Separate undo/redo from regular transactions
+        const undoRedoTransactions = transactions.filter(t =>
+          t.getMeta('history')?.undo || t.getMeta('history')?.redo
+        );
+        const regularTransactions = transactions.filter(t =>
+          !t.getMeta('history')?.undo && !t.getMeta('history')?.redo
+        );
+
+        if (undoRedoTransactions.length > 0) {
+          tr = this.handleUndoRedo(prevState, nextState, tr, docChanged);
+        }
+        if (regularTransactions.length > 0 && (!this.loaded || docChanged)) {
+          this.loaded = true;
+          tr = this.assignIDsForMissing(regularTransactions, prevState, nextState, this.view);
+
+          if (this.pastedPara?.content?.childCount > 1) {
+            tr = this.assignSameObjectMetaDataForCutPastePara(nextState, tr);
+          }
+
+          tr = this.trackDeletedObjectId(prevState, nextState, tr);
+          tr = this.setDirtyFlagOnChange(prevState, nextState, tr, docChanged);
+        }
+        if (tr && nextState.tr) {
+          tr.storedMarks = nextState.tr.storedMarks;
+        }
+
+        if (tr?.docChanged) {
+          tr.setMeta('skipAppendTransaction', true);
+          return tr;
+        }
+        return null;
       },
+
     });
   }
 
@@ -166,7 +198,8 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
    * @return true if node has the attribute, false otherwise
    */
   isNodeHasAttribute = (node: Node, attrName: string): boolean => {
-    return node.attrs?.[attrName] !== undefined;
+    const val = node.attrs?.[attrName];
+    return val !== undefined && val !== null;
   };
 
   isTargetNodeAllowed = (node: Node): boolean => {
@@ -201,7 +234,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     const { cutObjectIds } = this.getState(nextState) || {};
     // this is a cut and paste paras, need to set the objectMetaData same when user cut and paste multiple paragraphs
     if (this.pastedPara?.content?.childCount > 1) {
-      trans.doc.descendants((node, pos) => {
+      nextState.doc.descendants((node, pos) => {
         //check if the para is a cut and paste para
         if (
           this.isTargetNodeAllowed(node) &&
@@ -224,7 +257,31 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     return trans;
   }
 
+  getChangedRanges(transactions): Ranges[] {
+    const ranges: Ranges[] = [];
+    for (const tr of transactions) {
+      tr.mapping.maps.forEach(map => {
+        map.forEach((newStart, newEnd) => {
+          ranges.push({ from: newStart, to: newEnd });
+        });
+      });
+    }
+    return ranges;
+  }
+
+  handleUndoRedo(
+    prevState: EditorState,
+    nextState: EditorState,
+    tr: Transaction | null,
+    docChanged: boolean
+  ): Transaction | null {
+    tr = this.trackDeletedObjectId(prevState, nextState, tr);
+    tr = this.setDirtyFlagOnChange(prevState, nextState, tr, docChanged);
+    if (tr && nextState.tr) tr.storedMarks = nextState.tr.storedMarks;
+    return tr;
+  }
   assignIDsForMissing(
+    transactions: Transaction[],
     prevState: EditorState,
     nextState: EditorState,
     view: EditorView
@@ -232,6 +289,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     let tr = nextState.tr;
     let modified = false;
     const objIds = [];
+    const rangePos = [];
     const { prefix, suffix } = this.getState(nextState) || {};
 
     // Adds a unique id to the document
@@ -245,32 +303,71 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
       modified = true;
     }
 
-    // Adds a unique id to a node
-    tr.doc.descendants((node, pos) => {
-      const required = this.isRequiredNewId(
-        node,
-        objIds,
-        view,
-        prevState,
-        nextState,
-        pos
-      );
-      if (required) {
-        const newId = createObjectId(prefix, suffix);
-        const attrs = node.attrs;
-        objIds.push(newId);
-        tr.setNodeMarkup(pos, undefined, {
-          ...attrs,
-          [ATTR_OBJID]: newId,
-          [ATTR_OBJMETADATA]: null,
-          [ATTR_DIRTY]: true,
+    const rawRanges = this.getChangedRanges(transactions);
+    const changedRanges = this.mergeRanges(rawRanges);
+    const docSize = nextState.doc.content.size;
+
+    // Only process affected parts
+    // let tr = nextState.tr;
+    for (const range of changedRanges) {
+      //  Defensive bounds check
+      const from = Math.max(0, Math.min(range.from, docSize));
+      const to = Math.max(0, Math.min(range.to, docSize));
+      if (from >= to) continue;
+
+      try {
+        nextState.doc.nodesBetween(from, to, (node, pos) => {
+          if (!rangePos.includes(pos)) {
+            rangePos.push(pos);
+            const required = this.isRequiredNewId(
+              node,
+              objIds,
+              view,
+              prevState,
+              nextState,
+              pos
+            );
+            if (node.isTextblock && required) {
+              const newId = createObjectId(prefix, suffix);
+              objIds.push(newId)
+              tr.setNodeMarkup(pos, undefined, { ...node.attrs, [ATTR_OBJID]: newId });
+              modified = true;
+            }
+          }
         });
-        modified = true;
+      } catch (err) {
+        console.warn("Skipped invalid range in assignIDsForMissing:", range, err);
       }
-    });
+    }
 
     return modified ? tr : null;
   }
+
+  mergeRanges(ranges: Ranges[]): Ranges[] {
+    if (!ranges.length) return [];
+    ranges.sort((a, b) => a.from - b.from);
+    const merged = [ranges[0]];
+
+    for (let i = 1; i < ranges.length; i++) {
+      const last = merged[merged.length - 1];
+      const current = ranges[i];
+      if (current.from <= last.to + 1) {
+        last.to = Math.max(last.to, current.to);
+      } else {
+        merged.push(current);
+      }
+    }
+    return merged;
+  }
+
+  shouldSkipAppend(transactions: Transaction[]): boolean {
+    return transactions.some(tr => tr.getMeta('skipAppendTransaction'));
+  }
+
+  isUndoOrRedo(transactions: Transaction[]): boolean {
+    return transactions.some(tr => tr.getMeta('history')?.undo || tr.getMeta('history')?.redo);
+  }
+
 
   isRequiredNewId(
     node: Node,
@@ -285,7 +382,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
       required = true;
     } else {
       const objId = node.attrs[ATTR_OBJID];
-      if (objIds.includes(objId)) {
+      if (objIds.includes(objId) && view?.['input']?.['lastKeyCode'] !== BACKSPACEKEYCODE) {
         // objectId already exists, recreate
         required = true;
       } else {
@@ -477,6 +574,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     docChanged: boolean
   ): Transaction {
     let isDirty = false;
+    let isOnLoad = false;
     const { selection, schema } = nextState;
     if (
       !(
@@ -513,25 +611,30 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     if (!isDirty) {
       isDirty = !!para1?.node.attrs.dirty;
     }
-
-    if (docChanged && !isDirty && para && !para.node.attrs.dirty) {
+    if (para && para1) {
+      // on document load the last paragraph becomes dirty, to avoid that we check the position between the two paragraphs
+      isOnLoad = para.pos - para1.pos > 3;
+    }
+    if (para && docChanged && !isOnLoad && (!isDirty && !para.node.attrs.dirty)) {
       tr ??= nextState.tr;
       tr = tr.setNodeMarkup(para.pos, null, {
         ...para.node.attrs,
         dirty: true,
       });
     }
-    const parentTable = this.getParentByPosition(
-      nextState.doc,
-      para.pos,
-      schema.nodes.table
-    );
-    if (parentTable && !parentTable.node.attrs.dirty) {
-      tr ??= nextState.tr;
-      tr = tr.setNodeMarkup(parentTable.pos, null, {
-        ...parentTable.node.attrs,
-        dirty: true,
-      });
+    if (para) {
+      const parentTable = this.getParentByPosition(
+        nextState.doc,
+        para.pos,
+        schema.nodes.table
+      );
+      if (parentTable && !parentTable.node.attrs.dirty) {
+        tr ??= nextState.tr;
+        tr = tr.setNodeMarkup(parentTable.pos, null, {
+          ...parentTable.node.attrs,
+          dirty: true,
+        });
+      }
     }
     return tr;
   }

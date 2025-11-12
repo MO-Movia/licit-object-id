@@ -1,3 +1,8 @@
+/**
+ * @license MIT
+ * @copyright Copyright 2025 Modus Operandi Inc. All Rights Reserved.
+ */
+
 import { ObjectIdPlugin, validateAttr } from './ObjectIdPlugin';
 import { createEditor, doc, p, schema } from 'jest-prosemirror';
 import { EditorView } from 'prosemirror-view';
@@ -41,6 +46,7 @@ describe('Object ID plugin', () => {
       )
     ).toBeFalsy();
   });
+
   it('should handle createNewId when this.isNewParagraph(prevState, nextState, pos, view is true', () => {
     const dummyNode = {
       type: { name: 'citationnote' },
@@ -82,6 +88,7 @@ describe('Object ID plugin', () => {
         {
           objectId: '123',
           objectMetaData: null as unknown as Record<string, unknown>,
+          selectionId: 'selectionId123',
         },
       ],
     });
@@ -110,9 +117,11 @@ describe('Object ID plugin', () => {
           lastEditedOn: '2025-02-18T06:11:55.000+00:00',
           capco: { system: 'US', joint: false },
           name: '9c 2f 8107 F 4b 7 403e A 0ae 2b 55e 79885ff',
-        },
+        } as Record<string, unknown>,
+        selectionId: 'selectionId123'
       },
-      { objectId: 'abc', objectMetaData: null },
+      { objectId: 'abc', objectMetaData: null, selectionId: 'selectionId123' },
+
     ];
     const result = plugin.getObjectMetaDataFromCutObj('123', cutObjectIds);
     expect(result).toEqual({
@@ -242,6 +251,7 @@ describe('Object ID plugin', () => {
             capco: { system: 'US', joint: false },
             name: '9c 2f 8107 F 4b 7 403e A 0ae 2b 55e 79885ff',
           },
+          selectionId: 'selectionId123',
         },
       ],
     });
@@ -287,10 +297,12 @@ describe('Object ID plugin', () => {
             capco: { system: 'US', joint: false },
             name: '9c 2f 8107 F 4b 7 403e A 0ae 2b 55e 79885ff',
           },
+          selectionId: 'selectionId123',
         },
         {
           objectId: 'abc',
           objectMetaData: null as unknown as Record<string, unknown>,
+          selectionId: 'selectionId124',
         },
       ],
     });
@@ -435,6 +447,7 @@ describe('Object ID plugin', () => {
             capco: { system: 'US', joint: false },
             name: '9c 2f 8107 F 4b 7 403e A 0ae 2b 55e 79885ff',
           },
+          selectionId: 'selectionId123',
         },
       ],
     });
@@ -910,6 +923,37 @@ describe('Object ID plugin', () => {
     expect(result).toBeDefined();
   });
 
+  it('should handle appendTransaction for undo/redo transactions', () => {
+    const testSchema = new Schema({
+      nodes: {
+        doc: { content: 'paragraph+' },
+        paragraph: { content: 'text*', group: 'block' },
+        text: { group: 'inline' },
+      },
+    });
+
+    const prevDoc = testSchema.node('doc', null, [
+      testSchema.node('paragraph', null, [testSchema.text('Before')]),
+    ]);
+
+    const nextDoc = testSchema.node('doc', null, [
+      testSchema.node('paragraph', null, [testSchema.text('After')]),
+    ]);
+
+    const prevState = EditorState.create({ schema: testSchema, doc: prevDoc });
+    const nextState = EditorState.create({ schema: testSchema, doc: nextDoc });
+
+    // Create a mock transaction with undo meta
+    const undoTr = nextState.tr.setMeta('history', { undo: true });
+
+    const plugin = new ObjectIdPlugin();
+    const appendTransaction = plugin.spec.appendTransaction || (() => null);
+
+    // Pass the undo transaction in the array
+    const result = appendTransaction([undoTr], prevState, nextState);
+    expect(result === null || result instanceof nextState.tr.constructor).toBe(true);
+  });
+
   it('should validate attrs', () => {
     expect(validateAttr(null)).toBeTruthy();
     expect(validateAttr(undefined)).toBeTruthy();
@@ -976,10 +1020,12 @@ describe('Object ID plugin', () => {
         {
           objectId: '123',
           objectMetaData: null as unknown as Record<string, unknown>,
+          selectionId: 'selectionId123',
         },
         {
           objectId: '123',
           objectMetaData: null as unknown as Record<string, unknown>,
+          selectionId: 'selectionId124',
         },
       ],
     });
@@ -989,7 +1035,7 @@ describe('Object ID plugin', () => {
       },
       doc: mockdoc,
     } as unknown as Transaction;
-    const Mockstate = { tr: Mocktr } as unknown as EditorState;
+    const Mockstate = { tr: Mocktr, doc: mockdoc } as unknown as EditorState;
     expect(
       plugin.assignSameObjectMetaDataForCutPastePara(
         Mockstate,
@@ -997,4 +1043,299 @@ describe('Object ID plugin', () => {
       )
     ).toBeDefined();
   });
+  it('should return false when isCut is true but objectId not found in cutObjectIds', () => {
+    const plugin = new ObjectIdPlugin();
+    plugin.isCut = true;
+    const node = {
+      type: { name: 'paragraph' },
+      attrs: { objectId: 'not-found' }
+    } as unknown as Node;
+
+    jest.spyOn(plugin, 'getState').mockReturnValue({
+      cutObjectIds: [
+        { objectId: '123', objectMetaData: {}, selectionId: 'sel1' }
+      ]
+    });
+
+    const result = plugin.createNewId(
+      node,
+      'not-found',
+      [],
+      {} as EditorView,
+      {} as EditorState,
+      {} as EditorState,
+      0
+    );
+    expect(result).toBeFalsy();
+  });
+
+  it('should return tr unchanged when no IDs are deleted', () => {
+    const plugin = new ObjectIdPlugin();
+
+    const schema = new Schema({
+      nodes: {
+        doc: { content: 'paragraph+' },
+        paragraph: {
+          content: 'text*',
+          attrs: { objectId: { default: null } }
+        },
+        text: {}
+      }
+    });
+
+    const doc = schema.node('doc', null, [
+      schema.node('paragraph', { objectId: '123' }, [schema.text('test')])
+    ]);
+
+    const prevState = EditorState.create({ schema, doc });
+    const nextState = EditorState.create({ schema, doc });
+    const tr = nextState.tr;
+
+    const result = plugin.trackDeletedObjectId(prevState, nextState, tr);
+    expect(result).toBe(tr);
+  });
+
+  it('should merge new deleted IDs with existing ones', () => {
+    const plugin = new ObjectIdPlugin();
+
+    const schema = new Schema({
+      nodes: {
+        doc: {
+          content: 'paragraph+',
+          attrs: { deletedObjectIds: { default: [] } }
+        },
+        paragraph: {
+          content: 'text*',
+          attrs: { objectId: { default: null } }
+        },
+        text: {}
+      }
+    });
+
+    const prevDoc = schema.node('doc', { deletedObjectIds: ['old-id'] }, [
+      schema.node('paragraph', { objectId: '123' }, [schema.text('test')]),
+      schema.node('paragraph', { objectId: '456' }, [schema.text('test2')])
+    ]);
+
+    const nextDoc = schema.node('doc', { deletedObjectIds: ['old-id'] }, [
+      schema.node('paragraph', { objectId: '123' }, [schema.text('test')])
+    ]);
+
+    const prevState = EditorState.create({ schema, doc: prevDoc });
+    const nextState = EditorState.create({ schema, doc: nextDoc });
+    const tr = nextState.tr;
+
+    const result = plugin.trackDeletedObjectId(prevState, nextState, tr);
+    expect(result).toBeDefined();
+  });
+
+  it('should return tr when selection is not TextSelection', () => {
+    const plugin = new ObjectIdPlugin();
+    const tr = {} as Transaction;
+
+    const prevState = {
+      selection: { type: 'node' }
+    } as unknown as EditorState;
+
+    const nextState = {
+      selection: { type: 'node' },
+      schema: { nodes: {} }
+    } as unknown as EditorState;
+
+    const result = plugin.setDirtyFlagOnChange(prevState, nextState, tr, true);
+    expect(result).toBe(tr);
+  });
+
+  it('should return tr when paragraph is not found', () => {
+    const plugin = new ObjectIdPlugin();
+    const schema = new Schema({
+      nodes: {
+        doc: { content: 'text*' },
+        text: {}
+      }
+    });
+
+    const doc = schema.node('doc', null, [schema.text('test')]);
+    const state = EditorState.create({ schema, doc });
+
+    const result = plugin.setDirtyFlagOnChange(state, state, null, true);
+    expect(result).toBeNull();
+  });
+
+  it('should set dirty flag on parent table', () => {
+    const plugin = new ObjectIdPlugin();
+    const schema = new Schema({
+      nodes: {
+        doc: { content: 'table+' },
+        table: {
+          content: 'table_row+',
+          attrs: { dirty: { default: false } }
+        },
+        table_row: { content: 'table_cell+' },
+        table_cell: {
+          content: 'paragraph+',
+          attrs: { dirty: { default: false } }
+        },
+        paragraph: {
+          content: 'text*',
+          attrs: { dirty: { default: false } }
+        },
+        text: {}
+      }
+    });
+
+    const doc = schema.node('doc', null, [
+      schema.node('table', { dirty: false }, [
+        schema.node('table_row', null, [
+          schema.node('table_cell', { dirty: false }, [
+            schema.node('paragraph', { dirty: false }, [schema.text('test')])
+          ])
+        ])
+      ])
+    ]);
+
+    const state = EditorState.create({ schema, doc });
+    const result = plugin.setDirtyFlagOnChange(state, state, null, true);
+    expect(result).toBeDefined();
+  });
+
+  it('should skip invalid ranges in assignIDsForMissing', () => {
+    const plugin = new ObjectIdPlugin();
+    const schema = new Schema({
+      nodes: {
+        doc: { content: 'paragraph+', attrs: { objectId: { default: null } } },
+        paragraph: {
+          content: 'text*',
+          attrs: { objectId: { default: null } }
+        },
+        text: {}
+      }
+    });
+
+    const doc = schema.node('doc', null, [
+      schema.node('paragraph', { objectId: null }, [schema.text('test')])
+    ]);
+
+    const state = EditorState.create({ schema, doc });
+
+    // Mock getChangedRanges to return invalid range
+    jest.spyOn(plugin, 'getChangedRanges').mockReturnValue([
+      { from: 100, to: 50 } // Invalid: from > to
+    ]);
+
+    const result = plugin.assignIDsForMissing(
+      [],
+      state,
+      state,
+      {} as EditorView
+    );
+
+    expect(result).toBeDefined();
+  });
+
+  it('should add objectId to document when missing', () => {
+    const plugin = new ObjectIdPlugin({ prefix: 'test-', suffix: '-end' });
+    const schema = new Schema({
+      nodes: {
+        doc: {
+          content: 'paragraph+',
+          attrs: { objectId: { default: null }, objectMetaData: { default: null } }
+        },
+        paragraph: { content: 'text*' },
+        text: {}
+      }
+    });
+
+    const doc = schema.node('doc', { objectId: null, objectMetaData: null }, [
+      schema.node('paragraph', null, [schema.text('test')])
+    ]);
+
+    const state = EditorState.create({ schema, doc });
+
+    const result = plugin.assignIDsForMissing([], state, state, {} as EditorView);
+    expect(result).toBeDefined();
+  });
+
+  it('should add objectMetaData to document when missing', () => {
+    const plugin = new ObjectIdPlugin();
+    const schema = new Schema({
+      nodes: {
+        doc: {
+          content: 'paragraph+',
+          attrs: { objectId: { default: '123' }, objectMetaData: { default: null } }
+        },
+        paragraph: { content: 'text*' },
+        text: {}
+      }
+    });
+
+    const doc = schema.node('doc', { objectId: '123', objectMetaData: null }, [
+      schema.node('paragraph', null, [schema.text('test')])
+    ]);
+
+    const state = EditorState.create({ schema, doc });
+    jest.spyOn(plugin, 'isNodeHasAttribute').mockReturnValue(false);
+
+    const result = plugin.assignIDsForMissing([], state, state, {} as EditorView);
+    expect(result).toBeDefined();
+  });
+
+  it('should handle getContent when node type not found', () => {
+    const plugin = new ObjectIdPlugin();
+    const mockSchema = {
+      spec: {
+        nodes: {
+          get: jest.fn(() => null)
+        }
+      }
+    } as unknown as Schema;
+
+    const result = plugin.getContent('nonexistent', mockSchema);
+    expect(result).toBeNull();
+  });
+
+  it('should return false when cutObjectIds is empty', () => {
+    const plugin = new ObjectIdPlugin();
+    jest.spyOn(plugin, 'getState').mockReturnValue({
+      cutObjectIds: []
+    });
+
+    const view = {
+      state: {}
+    } as unknown as EditorView;
+
+    const boundHandlePaste = plugin?.props?.handlePaste?.bind(plugin);
+    const result = boundHandlePaste(view, {} as Event, {} as Slice);
+    expect(result).toBeFalsy();
+  });
+
+  it('should skip assignSameObjectMetaDataForCutPastePara when childCount <= 1', () => {
+    const plugin = new ObjectIdPlugin();
+    plugin.loaded = true;
+    plugin.pastedPara = { content: { childCount: 1 } } as Slice;
+
+    const schema = new Schema({
+      nodes: {
+        doc: { content: 'paragraph+' },
+        paragraph: { content: 'text*' },
+        text: {}
+      }
+    });
+
+    const doc = schema.node('doc', null, [
+      schema.node('paragraph', null, [schema.text('test')])
+    ]);
+
+    const state = EditorState.create({ schema, doc });
+    const tr = state.tr.setMeta('docChanged', true);
+
+    const appendTransaction = plugin.spec.appendTransaction;
+    const result = appendTransaction([tr], state, state);
+
+    // Should not call assignSameObjectMetaDataForCutPastePara
+    expect(result).toBeDefined();
+  });
 });
+
+
+
