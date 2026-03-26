@@ -1,6 +1,6 @@
 {
   "name": "@modusoperandi/licit-object-id",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "subversion": "1",
   "description": "ObjectId plugin built with ProseMirror",
@@ -35,18 +35,18 @@
   },
   "devDependencies": {
     "@modusoperandi/licit-doc-attrs-step": "1.1.0",
-    "@modusoperandi/eslint-config": "^3.0.2",
+    "@modusoperandi/eslint-config": "^3.0.4",
     "@types/jest": "^30.0.0",
-    "@types/node": "^25.0.2",
+    "@types/node": "^25.5.0",
     "copyfiles": "^2.4.1",
-    "eslint": "^9.0.0",
+    "eslint": "^9.39.4",
     "identity-obj-proxy": "^3.0.0",
-    "jest": "^30.2.0",
-    "jest-environment-jsdom": "^30.2.0",
+    "jest": "^30.3.0",
+    "jest-environment-jsdom": "^30.3.0",
     "jest-junit": "^16.0.0",
     "jest-prosemirror": "^3.0.1",
     "jest-sonar-reporter": "^2.0.0",
-    "ts-jest": "^29.4.5",
+    "ts-jest": "^29.4.6",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   }
