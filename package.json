@@ -31,7 +31,7 @@
     "prosemirror-utils": "^1.0.0"
   },
   "dependencies": {
-    "uuid": "^9.0.1"
+    "uuid": "^14.0.0"
   },
   "devDependencies": {
     "@modusoperandi/licit-doc-attrs-step": "1.1.0",
