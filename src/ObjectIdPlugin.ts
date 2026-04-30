@@ -95,7 +95,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
             const { state } = view;
             const { selection } = state;
             const { from, to } = selection;
-            const frompos = from - 1 < 0 ? 0 : from - 1;
+            const frompos = Math.max(from - 1, 0);
             const selectedPara = state.doc.slice(frompos, to);
             selectedPara.content.forEach((node) => {
               if (this.isTargetNodeAllowed(node) && node.attrs[ATTR_OBJID]) {
@@ -220,7 +220,9 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
   }
 
   isDocChanged(transactions: Transaction[]): boolean {
-    return transactions.some((transaction) => transaction.docChanged);
+    return transactions.some((transaction) => {
+      return transaction.docChanged && !transaction.getMeta('styleInitialLoad');
+    });
   }
 
   getObjectMetaDataFromCutObj(objectId: string, cutObjectIds: CutObjectInfo[]) {
@@ -352,7 +354,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     const merged = [ranges[0]];
 
     for (let i = 1; i < ranges.length; i++) {
-      const last = merged[merged.length - 1];
+      const last = merged.at(-1);
       const current = ranges[i];
       if (current.from <= last.to + 1) {
         last.to = Math.max(last.to, current.to);
@@ -497,8 +499,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     ALLOWED_NODES.forEach((name) => {
       const content = this.getContent(name, schema);
       if (content) {
-        contentArr.push(content);
-        contentArr.push(schema.nodes[name]);
+        contentArr.push(content, schema.nodes[name]);
       }
     });
 
