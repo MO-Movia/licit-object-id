@@ -4,7 +4,8 @@
     "jsx": "react",
     "target": "ES2022",
     "module": "esnext",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
+    "rootDir": "src",
     "allowSyntheticDefaultImports": true,
     "lib": [
       "ES2022",
