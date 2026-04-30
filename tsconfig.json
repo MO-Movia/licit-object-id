@@ -4,14 +4,12 @@
     "jsx": "react",
     "target": "ES2022",
     "module": "esnext",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
-    "lib": [
-      "ES2022",
-      "dom"
-    ],
+    "lib": ["ES2022", "dom"],
     "outDir": "dist",
     "pretty": false,
+    "rootDir": "./src",
     "skipLibCheck": true,
     "esModuleInterop": true,
     "declaration": true,
