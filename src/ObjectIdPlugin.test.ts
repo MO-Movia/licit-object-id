@@ -1945,25 +1945,31 @@ describe('Object ID plugin', () => {
       }
     });
 
-    const doc = testSchema.node('doc', null, [
+    const prevDoc = testSchema.node('doc', null, [
       testSchema.node('paragraph', { dirty: false }, [testSchema.text('x')])
     ]);
-    const para = doc.child(0);
+    const nextDoc = testSchema.node('doc', null, [
+      testSchema.node('paragraph', { dirty: false }, [testSchema.text('y')])
+    ]);
     const capcoPos = 5;
-    const docWithNodeAt = Object.assign(doc, {
-      nodeAt: (pos: number) => (pos === capcoPos ? para : null)
+    const prevDocWithNodeAt = Object.assign(prevDoc, {
+      nodeAt: (pos: number) => (pos === capcoPos ? prevDoc.child(0) : null)
+    });
+    const nextDocWithNodeAt = Object.assign(nextDoc, {
+      nodeAt: (pos: number) => (pos === capcoPos ? nextDoc.child(0) : null)
     });
 
-    const selection = TextSelection.create(docWithNodeAt, 1, 1);
+    const prevSelection = TextSelection.create(prevDocWithNodeAt, 1, 1);
+    const nextSelection = TextSelection.create(nextDocWithNodeAt, 1, 1);
     const prevState = EditorState.create({
       schema: testSchema,
-      doc: docWithNodeAt,
-      selection
+      doc: prevDocWithNodeAt,
+      selection: prevSelection
     });
     const nextState = EditorState.create({
       schema: testSchema,
-      doc: docWithNodeAt,
-      selection
+      doc: nextDocWithNodeAt,
+      selection: nextSelection
     });
 
     const tr = { setNodeMarkup: jest.fn(() => tr) } as unknown as Transaction;

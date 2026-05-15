@@ -570,6 +570,36 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     );
   }
 
+  
+  private normalizeNodeForDirtyCompare(node: Node | null | undefined) {
+    if (!node) {
+      return null;
+    }
+    const json = typeof node.toJSON === 'function' ? node.toJSON() : node;
+    const walk = (value: unknown): unknown => {
+      if (!value || typeof value !== 'object') {
+        return value;
+      }
+      if (Array.isArray(value)) {
+        return value.map(walk);
+      }
+      const next: Record<string, unknown> = {};
+      Object.keys(value).forEach((key) => {
+        if (key === 'dirty') {
+          return;
+        }
+        next[key] = walk((value as Record<string, unknown>)[key]);
+      });
+      return next;
+    };
+    return walk(json);
+  }
+
+  private didNodeChange(prevNode: Node | null | undefined, nextNode: Node | null | undefined): boolean {
+    return JSON.stringify(this.normalizeNodeForDirtyCompare(prevNode)) !==
+      JSON.stringify(this.normalizeNodeForDirtyCompare(nextNode));
+  }
+
   // set the dirty flag on each changes on editor and also for undo operations.
   setDirtyFlagOnChange(
     prevState: EditorState,
@@ -596,7 +626,8 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
       para1 = prevState.doc.nodeAt(capcoPos);
       if (para) {
         isDirty = !!para1?.attrs.dirty;
-        if (para && docChanged && (!isDirty && !para.attrs.dirty)) {
+        const didChange = this.didNodeChange(para1, para);
+        if (para && docChanged && didChange && (!isDirty && !para.attrs.dirty)) {
           tr ??= nextState.tr;
           tr = tr.setNodeMarkup(capcoPos, null, {
             ...para.attrs,
@@ -640,7 +671,8 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
         // on document load the last paragraph becomes dirty, to avoid that we check the position between the two paragraphs
         isOnLoad = para.pos - para1.pos > 3;
       }
-      if (para && docChanged && !isOnLoad && (!isDirty && !para.node.attrs.dirty)) {
+      const didChange = this.didNodeChange(para1?.node, para?.node);
+      if (para && docChanged && didChange && !isOnLoad && (!isDirty && !para.node.attrs.dirty)) {
         tr ??= nextState.tr;
         tr = tr.setNodeMarkup(para.pos, null, {
           ...para.node.attrs,
@@ -653,7 +685,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
           para.pos,
           schema.nodes.table
         );
-        if (parentTable && !parentTable.node.attrs.dirty) {
+        if (parentTable && docChanged && !parentTable.node.attrs.dirty) {
           tr ??= nextState.tr;
           tr = tr.setNodeMarkup(parentTable.pos, null, {
             ...parentTable.node.attrs,
