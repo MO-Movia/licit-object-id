@@ -606,7 +606,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     nextState: EditorState,
     tr: Transaction,
     docChanged: boolean,
-    capcoPos: number
+    capcoPos: number | number[] | null
   ): Transaction {
     let isDirty = false;
     let isOnLoad = false;
@@ -621,20 +621,24 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     }
     let para = null;
     let para1 = null;
-    if (capcoPos) {
-      para = nextState.doc.nodeAt(capcoPos);
-      para1 = prevState.doc.nodeAt(capcoPos);
-      if (para) {
-        isDirty = !!para1?.attrs.dirty;
-        const didChange = this.didNodeChange(para1, para);
-        if (para && docChanged && didChange && (!isDirty && !para.attrs.dirty)) {
-          tr ??= nextState.tr;
-          tr = tr.setNodeMarkup(capcoPos, null, {
-            ...para.attrs,
-            dirty: true,
-          });
+    if (capcoPos != null) {
+      const capcoPositions = Array.isArray(capcoPos) ? capcoPos : [capcoPos];
+
+      capcoPositions.forEach((pos) => {
+        para = nextState.doc.nodeAt(pos);
+        para1 = prevState.doc.nodeAt(pos);
+        if (para) {
+          isDirty = !!para1?.attrs.dirty;
+          const didChange = this.didNodeChange(para1, para);
+          if (para && docChanged && didChange && (!isDirty && !para.attrs.dirty)) {
+            tr ??= nextState.tr;
+            tr = tr.setNodeMarkup(pos, null, {
+              ...para.attrs,
+              dirty: true,
+            });
+          }
         }
-      }
+      });
 
     }
     else {
