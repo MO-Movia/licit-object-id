@@ -45,6 +45,7 @@ const ALLOWED_NODES = [
   'table_cell',
   'table_row',
   'citationnote',
+  'enhanced_table_figure'
 ];
 
 interface IdConfig {
@@ -570,7 +571,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     );
   }
 
-  
+
   private normalizeNodeForDirtyCompare(node: Node | null | undefined) {
     if (!node) {
       return null;
@@ -689,10 +690,22 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
           para.pos,
           schema.nodes.table
         );
+        const parentEic = this.getParentByPosition(
+          nextState.doc,
+          para.pos,
+          schema.nodes.enhanced_table_figure
+        );
         if (parentTable && docChanged && !parentTable.node.attrs.dirty) {
           tr ??= nextState.tr;
           tr = tr.setNodeMarkup(parentTable.pos, null, {
             ...parentTable.node.attrs,
+            dirty: true,
+          });
+        }
+        if (parentEic && docChanged && !parentEic.node.attrs.dirty) {
+          tr ??= nextState.tr;
+          tr = tr.setNodeMarkup(parentEic.pos, null, {
+            ...parentEic.node.attrs,
             dirty: true,
           });
         }
