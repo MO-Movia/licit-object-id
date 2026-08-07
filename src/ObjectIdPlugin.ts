@@ -21,6 +21,7 @@ import {
   Slice,
   AttributeSpec,
   NodeType,
+  Node as ProseMirrorNode
 } from 'prosemirror-model';
 const SPEC = 'spec';
 const ATTR_OBJID = 'objectId';
@@ -64,6 +65,12 @@ export interface Ranges {
   from: number;
   to: number;
 }
+type FindParentNodeResult = {
+  pos: number;
+  start: number;
+  depth: number;
+  node: ProseMirrorNode;
+};
 
 export const ObjectIdPluginKey = new PluginKey('ObjectIdPlugin');
 
@@ -123,7 +130,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
               (obj) => obj.objectId === node.attrs?.objectId
             );
             newattrs.objectMetaData = cutObjectIds[0].objectMetaData;
-            if (index !== -1) {
+            if (index >= 0) {
               newattrs.objectId = node.attrs.objectId;
               this.getState(view.state).cutObjectIds.splice(index, 1);
             } else {
@@ -620,29 +627,13 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     ) {
       return tr;
     }
-    let para = null;
-    let para1 = null;
-    if (capcoPos != null) {
-      const capcoPositions = Array.isArray(capcoPos) ? capcoPos : [capcoPos];
 
-      capcoPositions.forEach((pos) => {
-        para = nextState.doc.nodeAt(pos);
-        para1 = prevState.doc.nodeAt(pos);
-        if (para) {
-          isDirty = !!para1?.attrs.dirty;
-          const didChange = this.didNodeChange(para1, para);
-          if (para && docChanged && didChange && (!isDirty && !para.attrs.dirty)) {
-            tr ??= nextState.tr;
-            tr = tr.setNodeMarkup(pos, null, {
-              ...para.attrs,
-              dirty: true,
-            });
-          }
-        }
-      });
-
+    if (capcoPos) {
+      tr = this.setDirtyFlagOnChangeForParagraph(prevState, nextState, tr, docChanged, capcoPos);
     }
     else {
+      let para: FindParentNodeResult | null = null;
+      let para1: FindParentNodeResult | null = null;
       para = this.getParentBySelection(
         nextState.doc,
         selection,
@@ -656,7 +647,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
       );
 
       if (tr) {
-        let para2 = null;
+        let para2: FindParentNodeResult | null = null;
         const curSelection = tr['curSelection'];
         if (curSelection) {
           para2 = this.getParentBySelection(
@@ -676,42 +667,69 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
         // on document load the last paragraph becomes dirty, to avoid that we check the position between the two paragraphs
         isOnLoad = para.pos - para1.pos > 3;
       }
-      const didChange = this.didNodeChange(para1?.node, para?.node);
-      if (para && docChanged && didChange && !isOnLoad && (!isDirty && !para.node.attrs.dirty)) {
+      tr = this.setDirtyFlagOnChangeForTableParagraph(nextState, tr, docChanged, isDirty, isOnLoad, para, para1);
+    }
+    return tr;
+  }
+  setDirtyFlagOnChangeForParagraph(prevState: EditorState, nextState: EditorState, tr: Transaction, docChanged: boolean, capcoPos: number | number[] | null): Transaction {
+    const capcoPositions = Array.isArray(capcoPos) ? capcoPos : [capcoPos];
+    let para = null;
+    let para1 = null;
+    capcoPositions.forEach((pos) => {
+      para = nextState.doc.nodeAt(pos);
+      para1 = prevState.doc.nodeAt(pos);
+      if (para) {
+        let isDirty = !!para1?.attrs.dirty;
+        const didChange = this.didNodeChange(para1, para);
+        if (para && docChanged && didChange && (!isDirty && !para.attrs.dirty)) {
+          tr ??= nextState.tr;
+          tr = tr.setNodeMarkup(pos, null, {
+            ...para.attrs,
+            dirty: true,
+          });
+        }
+      }
+    });
+    return tr;
+  }
+  setDirtyFlagOnChangeForTableParagraph(nextState: EditorState, tr: Transaction, docChanged: boolean, isDirty: boolean, isOnLoad: boolean, para: FindParentNodeResult | null, para1: FindParentNodeResult | null): Transaction {
+    const { schema } = nextState;
+    const didChange = this.didNodeChange(para1?.node, para?.node);
+    if (para && docChanged && didChange && !isOnLoad && (!isDirty && !para.node.attrs.dirty)) {
+      tr ??= nextState.tr;
+      tr = tr.setNodeMarkup(para.pos, null, {
+        ...para.node.attrs,
+        dirty: true,
+      });
+    }
+    if (para) {
+      const parentTable = this.getParentByPosition(
+        nextState.doc,
+        para.pos,
+        schema.nodes.table
+      );
+      const parentEic = this.getParentByPosition(
+        nextState.doc,
+        para.pos,
+        schema.nodes.enhanced_table_figure
+      );
+      if (parentTable && docChanged && !parentTable.node.attrs.dirty) {
         tr ??= nextState.tr;
-        tr = tr.setNodeMarkup(para.pos, null, {
-          ...para.node.attrs,
+        tr = tr.setNodeMarkup(parentTable.pos, null, {
+          ...parentTable.node.attrs,
           dirty: true,
         });
       }
-      if (para) {
-        const parentTable = this.getParentByPosition(
-          nextState.doc,
-          para.pos,
-          schema.nodes.table
-        );
-        const parentEic = this.getParentByPosition(
-          nextState.doc,
-          para.pos,
-          schema.nodes.enhanced_table_figure
-        );
-        if (parentTable && docChanged && !parentTable.node.attrs.dirty) {
-          tr ??= nextState.tr;
-          tr = tr.setNodeMarkup(parentTable.pos, null, {
-            ...parentTable.node.attrs,
-            dirty: true,
-          });
-        }
-        if (parentEic && docChanged && !parentEic.node.attrs.dirty) {
-          tr ??= nextState.tr;
-          tr = tr.setNodeMarkup(parentEic.pos, null, {
-            ...parentEic.node.attrs,
-            dirty: true,
-          });
-        }
+      if (parentEic && docChanged && !parentEic.node.attrs.dirty) {
+        tr ??= nextState.tr;
+        tr = tr.setNodeMarkup(parentEic.pos, null, {
+          ...parentEic.node.attrs,
+          dirty: true,
+        });
       }
     }
     return tr;
+
   }
 }
 
