@@ -31,21 +31,11 @@ const NEWATTRS = [ATTR_OBJID, ATTR_OBJMETADATA, ATTR_DIRTY, ATTR_SELECTIONID];
 const ENTERKEYCODE = 13;
 const BACKSPACEKEYCODE = 8;
 const ATTR_DELETEDOBJIDS = 'deletedObjectIds';
-const DOC_NAME = 'doc';
 
-const ALLOWED_NODES = [
-  DOC_NAME,
-  'paragraph',
-  'bullet_list',
-  'heading',
-  'horizontal_rule',
-  'image',
-  'ordered_list',
-  'table',
-  'table_cell',
-  'table_row',
-  'citationnote',
-];
+// Nodes that must NOT receive an objectId attribute.
+// - 'text': ProseMirror throws at schema compilation if text nodes have attrs.
+// - 'hard_break': inline leaf with no meaningful artifact identity.
+const BLACKLISTED_NODES = new Set(['text', 'hard_break']);
 
 interface IdConfig {
   prefix?: string;
@@ -98,7 +88,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
             const frompos = Math.max(from - 1, 0);
             const selectedPara = state.doc.slice(frompos, to);
             selectedPara.content.forEach((node) => {
-              if (this.isTargetNodeAllowed(node) && node.attrs[ATTR_OBJID]) {
+              if (!this.isNodeBlacklisted(node) && node.attrs[ATTR_OBJID]) {
                 this.getState(view.state)?.cutObjectIds.push({
                   objectId: node.attrs[ATTR_OBJID],
                   objectMetaData: node.attrs[ATTR_OBJMETADATA],
@@ -204,13 +194,13 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     return val !== undefined && val !== null;
   };
 
-  isTargetNodeAllowed = (node: Node): boolean => {
-    return ALLOWED_NODES.includes(node.type.name);
+  isNodeBlacklisted = (node: Node): boolean => {
+    return BLACKLISTED_NODES.has(node.type.name);
   };
 
   requiredAddAttr = (node: Node): boolean => {
     return (
-      this.isTargetNodeAllowed(node) &&
+      !this.isNodeBlacklisted(node) &&
       !this.isNodeHasAttribute(node, ATTR_OBJID)
     );
   };
@@ -241,7 +231,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
       nextState.doc.descendants((node, pos) => {
         //check if the para is a cut and paste para
         if (
-          this.isTargetNodeAllowed(node) &&
+          !this.isNodeBlacklisted(node) &&
           null === node.attrs.objectMetaData &&
           cutObjectIds.some(
             (objId) => objId.objectId === node.attrs[ATTR_OBJID]
@@ -332,7 +322,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
               nextState,
               pos
             );
-            if (node.isTextblock && required) {
+            if (!this.isNodeBlacklisted(node) && required && node !== nextState.doc) {
               const newId = createObjectId(prefix, suffix);
               objIds.push(newId)
               tr.setNodeMarkup(pos, undefined, { ...node.attrs, [ATTR_OBJID]: newId });
@@ -428,11 +418,6 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
       ) {
         required = true;
         this.isCut = false;
-      } else if (
-        'object' === typeof objId &&
-        'citationnote' === node.type.name
-      ) {
-        required = true;
       } else {
         objIds.push(objId);
       }
@@ -444,7 +429,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
   nodeAssignment(state: EditorState): Record<string, unknown> {
     const nodesById = {};
     state.doc.descendants((node) => {
-      if (this.isTargetNodeAllowed(node) && node.attrs.objectId) {
+      if (!this.isNodeBlacklisted(node) && node.attrs.objectId) {
         nodesById[node.attrs.objectId] = node;
       }
     });
@@ -494,18 +479,17 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
   }
 
   createNewAttributes(schema: Schema): void {
-    const contentArr = [];
-
-    ALLOWED_NODES.forEach((name) => {
-      const content = this.getContent(name, schema);
-      if (content) {
-        contentArr.push(content, schema.nodes[name]);
-      }
-    });
-
-    contentArr.forEach((content) => {
+    schema.spec.nodes.forEach((name: string, spec: NodeSpec) => {
+      if (BLACKLISTED_NODES.has(name)) return;
+      // Add attrs to both the NodeSpec and the NodeType. The NodeType's
+      // computed attrs are what computeAttrs uses at runtime; the spec is
+      // needed for future schema recompilation.
+      const nodeType = schema.nodes[name];
       NEWATTRS.forEach((attr) => {
-        this.createAttribute(content, attr, null);
+        this.createAttribute(spec, attr, null);
+        if (nodeType) {
+          this.createAttribute(nodeType, attr, null);
+        }
       });
     });
   }
@@ -529,12 +513,6 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
       hasDefault: true, // Attribute2 expects this despite not being in the schema
       validate: validateAttr,
     } as AttributeSpec;
-  }
-
-  getContent(type: string, schema: Schema): NodeSpec {
-    const nodes = schema.spec.nodes;
-    const content: NodeSpec = nodes.get(type);
-    return content;
   }
 
   // checks enter key applied from begining of a paragraph
