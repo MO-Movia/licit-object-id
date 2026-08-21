@@ -37,9 +37,8 @@
     "@modusoperandi/licit-doc-attrs-step": "1.1.1",
     "@modusoperandi/eslint-config": "^3.0.4",
     "@types/jest": "^30.0.0",
-    "@types/node": "^26.0.1",
     "copyfiles": "^2.4.1",
-    "eslint": "^10.6.0",
+    "eslint": "^9.39.4",
     "identity-obj-proxy": "^3.0.0",
     "jest": "^30.4.2",
     "jest-environment-jsdom": "^30.4.1",
@@ -48,6 +47,6 @@
     "jest-sonar-reporter": "^2.0.0",
     "ts-jest": "^29.4.11",
     "ts-node": "^10.9.2",
-    "typescript": "^7.0.2"
+    "typescript": "^6.0.3"
   }
 }
