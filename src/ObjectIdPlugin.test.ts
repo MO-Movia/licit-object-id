@@ -2554,4 +2554,213 @@ describe('Object ID plugin', () => {
     //  it's not a new paragraph, cut, or duplicate)
     expect(paraOverwriteCall).toBeUndefined();
   });
+
+  // ── markDirtyByChangedRanges: drag-and-drop dirty flag tests ──
+
+  /**
+   * Helper: creates a two-paragraph schema and states simulating a
+   * drag-and-drop of text from one paragraph to another.
+   *
+   * @param dragUp  true = drag from para[1] up to para[0];
+   *                false = drag from para[0] down to para[1]
+   * @returns an object with plugin, prevState, nextState, and a real
+   *          transaction that represents the drag operation
+   */
+  function createDragScenario(dragUp: boolean): {
+    plugin: ObjectIdPlugin;
+    prevState: EditorState;
+    nextState: EditorState;
+    tr: Transaction;
+  } {
+    const plugin = new ObjectIdPlugin();
+    const testSchema = new Schema({
+      nodes: {
+        doc: { content: 'paragraph+' },
+        paragraph: {
+          content: 'text*',
+          attrs: { dirty: { default: false } },
+        },
+        text: {},
+      },
+    });
+
+    // Two paragraphs: "Hello" and "World"
+    const prevDoc = testSchema.node('doc', null, [
+      testSchema.node('paragraph', { dirty: false }, [
+        testSchema.text('Hello'),
+      ]),
+      testSchema.node('paragraph', { dirty: false }, [
+        testSchema.text('World'),
+      ]),
+    ]);
+
+    const prevState = EditorState.create({
+      schema: testSchema,
+      doc: prevDoc,
+      selection: TextSelection.create(
+        prevDoc,
+        dragUp ? 8 : 1, // cursor starts in source paragraph
+        dragUp ? 8 : 1,
+      ),
+    });
+
+    // Create a real transaction that simulates the drag
+    const tr = prevState.tr;
+    if (dragUp) {
+      // Drag "World" from para[1] up into para[0]
+      // prevDoc: para[0]="Hello" (pos 0, size 7), para[1]="World" (pos 7, size 7)
+      // Step 1: Delete "World" from para[1] (text at pos 8..13)
+      tr.delete(8, 13);
+      // After delete: para[0]="Hello" (pos 0, size 7), para[1]="" (pos 7, size 2)
+      // Step 2: Insert "World" at end of para[0] (text ends at pos 6)
+      tr.insert(6, testSchema.text('World'));
+      // After insert: para[0]="HelloWorld" (pos 0, size 12), para[1]="" (pos 12, size 2)
+    } else {
+      // Drag "Hello" from para[0] down into para[1]
+      // prevDoc: para[0]="Hello" (pos 0, size 7), para[1]="World" (pos 7, size 7)
+      // Step 1: Delete "Hello" from para[0] (text at pos 1..6)
+      tr.delete(1, 6);
+      // After delete: para[0]="" (pos 0, size 2), para[1]="World" (pos 2, size 7)
+      // Step 2: Insert "Hello" at beginning of para[1] (text starts at pos 3)
+      tr.insert(3, testSchema.text('Hello'));
+      // After insert: para[0]="" (pos 0, size 2), para[1]="HelloWorld" (pos 2, size 12)
+    }
+
+    // Build nextState from the transaction's resulting doc
+    const nextDoc = tr.doc;
+    const selPos = dragUp ? 10 : 8; // cursor in destination paragraph
+    const nextState = EditorState.create({
+      schema: testSchema,
+      doc: nextDoc,
+      selection: TextSelection.create(nextDoc, selPos, selPos),
+    });
+
+    return { plugin, prevState, nextState, tr };
+  }
+
+  it('should mark destination paragraph dirty when dragging text up', () => {
+    const { plugin, prevState, nextState, tr } = createDragScenario(true);
+    const result = plugin.markDirtyByChangedRanges(
+      [tr], prevState, nextState, null
+    );
+    expect(result).not.toBeNull();
+    // Destination paragraph (para[0] at pos 0) should be marked dirty
+    const destPara = result.doc.nodeAt(0);
+    expect(destPara?.attrs?.dirty).toBe(true);
+  });
+
+  it('should mark destination paragraph dirty when dragging text down', () => {
+    const { plugin, prevState, nextState, tr } = createDragScenario(false);
+    const result = plugin.markDirtyByChangedRanges(
+      [tr], prevState, nextState, null
+    );
+    expect(result).not.toBeNull();
+    // After drag down: para[0]="" at pos 0, para[1]="HelloWorld" at pos 2
+    const destPara = result.doc.nodeAt(2);
+    expect(destPara?.attrs?.dirty).toBe(true);
+  });
+
+  it('should mark source paragraph dirty when dragging text up', () => {
+    const { plugin, prevState, nextState, tr } = createDragScenario(true);
+    const result = plugin.markDirtyByChangedRanges(
+      [tr], prevState, nextState, null
+    );
+    expect(result).not.toBeNull();
+    // Both paragraphs should be dirty
+    const paras: Node[] = [];
+    result.doc.forEach((child: Node) => {
+      paras.push(child);
+    });
+    // para[0] = "HelloWorld" (destination), para[1] = "" (source)
+    expect(paras[0].attrs?.dirty).toBe(true);
+    expect(paras[1].attrs?.dirty).toBe(true);
+  });
+
+  it('should mark source paragraph dirty when dragging text down', () => {
+    const { plugin, prevState, nextState, tr } = createDragScenario(false);
+    const result = plugin.markDirtyByChangedRanges(
+      [tr], prevState, nextState, null
+    );
+    expect(result).not.toBeNull();
+    const paras: Node[] = [];
+    result.doc.forEach((child: Node) => {
+      paras.push(child);
+    });
+    // para[0] = "" (source), para[1] = "HelloWorld" (destination)
+    expect(paras[0].attrs?.dirty).toBe(true);
+    expect(paras[1].attrs?.dirty).toBe(true);
+  });
+
+  it('should not mark paragraphs dirty when nothing changed', () => {
+    const plugin = new ObjectIdPlugin();
+    const testSchema = new Schema({
+      nodes: {
+        doc: { content: 'paragraph+' },
+        paragraph: {
+          content: 'text*',
+          attrs: { dirty: { default: false } },
+        },
+        text: {},
+      },
+    });
+    const docNode = testSchema.node('doc', null, [
+      testSchema.node('paragraph', { dirty: false }, [
+        testSchema.text('Hello'),
+      ]),
+    ]);
+    const state = EditorState.create({
+      schema: testSchema,
+      doc: docNode,
+      selection: TextSelection.create(docNode, 1, 1),
+    });
+    // Empty transaction (no doc changes)
+    const tr = state.tr;
+    const result = plugin.markDirtyByChangedRanges(
+      [tr], state, state, null
+    );
+    // Should not create a transaction since nothing changed
+    expect(result).toBeNull();
+  });
+
+  it('should skip already-dirty paragraphs', () => {
+    const plugin = new ObjectIdPlugin();
+    const testSchema = new Schema({
+      nodes: {
+        doc: { content: 'paragraph+' },
+        paragraph: {
+          content: 'text*',
+          attrs: { dirty: { default: false } },
+        },
+        text: {},
+      },
+    });
+    const prevDoc = testSchema.node('doc', null, [
+      testSchema.node('paragraph', { dirty: true }, [
+        testSchema.text('a'),
+      ]),
+    ]);
+    const nextDoc = testSchema.node('doc', null, [
+      testSchema.node('paragraph', { dirty: true }, [
+        testSchema.text('ab'),
+      ]),
+    ]);
+    const prevState = EditorState.create({
+      schema: testSchema,
+      doc: prevDoc,
+      selection: TextSelection.create(prevDoc, 1, 1),
+    });
+    const nextState = EditorState.create({
+      schema: testSchema,
+      doc: nextDoc,
+      selection: TextSelection.create(nextDoc, 1, 1),
+    });
+    const tr = prevState.tr;
+    tr.insert(2, testSchema.text('b'));
+    const result = plugin.markDirtyByChangedRanges(
+      [tr], prevState, nextState, null
+    );
+    // Paragraph is already dirty, so no new setNodeMarkup should happen
+    // The result should be null (no changes needed)
+    expect(result).toBeNull();
+  });
 });

@@ -167,6 +167,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
 
           tr = this.trackDeletedObjectId(prevState, nextState, tr);
           tr = this.setDirtyFlagOnChange(prevState, nextState, tr, docChanged, capcoPos);
+          tr = this.markDirtyByChangedRanges(regularTransactions, prevState, nextState, tr);
         }
         if (tr && nextState.tr) {
           tr.storedMarks = nextState.tr.storedMarks;
@@ -610,8 +611,14 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
           const didChange = this.didNodeChange(para1, para);
           if (para && docChanged && didChange && (!isDirty && !para.attrs.dirty)) {
             tr ??= nextState.tr;
+            // Read current attrs from tr.doc if tr has been modified by
+            // assignIDsForMissing (e.g. to add objectId). Using nextState.doc
+            // attrs would overwrite that objectId.
+            const currentAttrs = tr.docChanged
+              ? (tr.doc.nodeAt(pos)?.attrs ?? para.attrs)
+              : para.attrs;
             tr = tr.setNodeMarkup(pos, null, {
-              ...para.attrs,
+              ...currentAttrs,
               dirty: true,
             });
           }
@@ -656,8 +663,13 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
       const didChange = this.didNodeChange(para1?.node, para?.node);
       if (para && docChanged && didChange && !isOnLoad && (!isDirty && !para.node.attrs.dirty)) {
         tr ??= nextState.tr;
+        // Read current attrs from tr.doc if tr has been modified by
+        // assignIDsForMissing (e.g. to add objectId).
+        const currentParaAttrs = tr.docChanged
+          ? (tr.doc.nodeAt(para.pos)?.attrs ?? para.node.attrs)
+          : para.node.attrs;
         tr = tr.setNodeMarkup(para.pos, null, {
-          ...para.node.attrs,
+          ...currentParaAttrs,
           dirty: true,
         });
       }
@@ -669,14 +681,166 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
         );
         if (parentTable && docChanged && !parentTable.node.attrs.dirty) {
           tr ??= nextState.tr;
+          // Same fix as above: read current attrs from tr.doc if tr has
+          // been modified, otherwise assignIDsForMissing's objectId gets
+          // overwritten.
+          const currentTableAttrs = tr.docChanged
+            ? (tr.doc.nodeAt(parentTable.pos)?.attrs ??
+              parentTable.node.attrs)
+            : parentTable.node.attrs;
           tr = tr.setNodeMarkup(parentTable.pos, null, {
-            ...parentTable.node.attrs,
+            ...currentTableAttrs,
             dirty: true,
           });
         }
       }
     }
     return tr;
+  }
+
+  /**
+   * Marks paragraphs dirty based on the transaction's changed ranges.
+   * Unlike setDirtyFlagOnChange (which only looks at the selection's
+   * paragraph), this method examines every paragraph that falls within
+   * a changed range and marks it dirty if its content actually changed.
+   * This handles drag-and-drop where both the source paragraph (text
+   * removed) and the destination paragraph (text inserted) need to be
+   * marked dirty, but the selection only ends up in the destination.
+   */
+  markDirtyByChangedRanges(
+    transactions: Transaction[],
+    prevState: EditorState,
+    nextState: EditorState,
+    tr: Transaction | null
+  ): Transaction | null {
+    if (!transactions.length) return tr;
+    // Guard against transactions without a valid mapping (e.g. fake
+    // transactions in tests).
+    if (!transactions.every((t) => t?.mapping?.maps)) return tr;
+
+    const { schema } = nextState;
+    const paraType = schema.nodes.paragraph;
+    if (!paraType) return tr;
+
+    const rawRanges = this.getChangedRanges(transactions);
+    const changedRanges = this.mergeRanges(rawRanges);
+    const docSize = nextState.doc.content.size;
+    const markedPositions = new Set<number>();
+
+    for (const range of changedRanges) {
+      const from = Math.max(0, Math.min(range.from, docSize));
+      const to = Math.max(0, Math.min(range.to, docSize));
+      if (from >= to) continue;
+
+      // Find all paragraphs in the changed range of nextState.doc
+      nextState.doc.nodesBetween(from, to, (node, pos) => {
+        if (node.type !== paraType) return;
+        if (markedPositions.has(pos)) return;
+
+        // Map the position back to prevState.doc to find the
+        // corresponding paragraph (if any) for comparison.
+        const prevPos = this.mapPosBackward(transactions, pos);
+        const prevPara =
+          prevPos != null ? prevState.doc.nodeAt(prevPos) : null;
+        const nextPara = nextState.doc.nodeAt(pos);
+
+        // Mark dirty if the paragraph content actually changed
+        const didChange = this.didNodeChange(prevPara, nextPara);
+        if (!didChange) return;
+
+        // Skip if already dirty
+        if (nextPara.attrs?.dirty) return;
+
+        markedPositions.add(pos);
+        tr ??= nextState.tr;
+        // Read current attrs from tr.doc if tr has been modified by
+        // assignIDsForMissing (e.g. to add objectId).
+        const currentAttrs = tr.docChanged
+          ? (tr.doc.nodeAt(pos)?.attrs ?? nextPara.attrs)
+          : nextPara.attrs;
+        tr = tr.setNodeMarkup(pos, null, {
+          ...currentAttrs,
+          dirty: true,
+        });
+      });
+    }
+
+    // Also check paragraphs that existed in prevState but were removed
+    // or modified outside the mapped ranges (e.g. the source paragraph
+    // in a drag where the deletion maps to a different range than the
+    // insertion). Walk prevState.doc's changed ranges and find paragraphs
+    // that no longer match.
+    for (const range of changedRanges) {
+      // Map the range back to prevState coordinates
+      const prevFrom = this.mapPosBackward(transactions, Math.max(0, Math.min(range.from, docSize)));
+      const prevTo = this.mapPosBackward(transactions, Math.max(0, Math.min(range.to, docSize)));
+      if (prevFrom == null || prevTo == null || prevFrom >= prevTo) continue;
+
+      const prevDocSize = prevState.doc.content.size;
+      const clampedPrevFrom = Math.max(0, Math.min(prevFrom, prevDocSize));
+      const clampedPrevTo = Math.max(0, Math.min(prevTo, prevDocSize));
+      if (clampedPrevFrom >= clampedPrevTo) continue;
+
+      prevState.doc.nodesBetween(clampedPrevFrom, clampedPrevTo, (node, pos) => {
+        if (node.type !== paraType) return;
+
+        // Map forward to find the corresponding paragraph in nextState
+        const nextPos = this.mapPosForward(transactions, pos);
+        if (nextPos == null) return; // paragraph was deleted
+        if (markedPositions.has(nextPos)) return;
+
+        const nextPara = nextState.doc.nodeAt(nextPos);
+        const prevPara = prevState.doc.nodeAt(pos);
+
+        const didChange = this.didNodeChange(prevPara, nextPara);
+        if (!didChange) return;
+        if (nextPara?.attrs?.dirty) return;
+
+        markedPositions.add(nextPos);
+        tr ??= nextState.tr;
+        const currentAttrs = tr.docChanged
+          ? (tr.doc.nodeAt(nextPos)?.attrs ?? nextPara.attrs)
+          : nextPara.attrs;
+        tr = tr.setNodeMarkup(nextPos, null, {
+          ...currentAttrs,
+          dirty: true,
+        });
+      });
+    }
+
+    return tr;
+  }
+
+  /**
+   * Maps a position from nextState.doc back to prevState.doc using
+   * the transactions' mapping (inverted).
+   */
+  private mapPosBackward(
+    transactions: Transaction[],
+    pos: number
+  ): number | null {
+    let result = pos;
+    for (let i = transactions.length - 1; i >= 0; i--) {
+      result = transactions[i].mapping.invert().map(result, -1);
+    }
+    if (result < 0) return null;
+    return result;
+  }
+
+  /**
+   * Maps a position from prevState.doc forward to nextState.doc using
+   * the transactions' mapping.
+   */
+  private mapPosForward(
+    transactions: Transaction[],
+    pos: number
+  ): number | null {
+    let result = pos;
+    for (const tr of transactions) {
+      result = tr.mapping.map(result, 1);
+    }
+    if (result < 0) return null;
+    return result;
   }
 }
 
