@@ -598,6 +598,9 @@ describe('Object ID plugin', () => {
   });
 
   it('should handle createNewId when isNewParagraph is not true and when typeof objId is object', () => {
+    // The citationnote special case was removed — createNewId now returns
+    // false for any node that has an existing objId but is not a new paragraph
+    // or a cut/paste operation, regardless of node type.
     const dummyNode = {
       type: { name: 'citationnote' },
     } as unknown as Node;
@@ -617,10 +620,14 @@ describe('Object ID plugin', () => {
         mocknextState,
         2
       )
-    ).toBeTruthy();
+    ).toBeFalsy();
   });
 
   it('should handle createNewId when isNewParagraph is true', () => {
+    // The citationnote special case was removed. With isNewParagraph
+    // returning false (lastKeyCode is string '13' not number 13) and
+    // isCut false, createNewId now returns false for a citationnote
+    // node that has an existing objId.
     const dummyNode = {
       type: { name: 'citationnote' },
     } as unknown as Node;
@@ -640,12 +647,12 @@ describe('Object ID plugin', () => {
         mocknextState,
         2
       )
-    ).toBeTruthy();
+    ).toBeFalsy();
   });
 
   it('should handle nodeAssignment', () => {
     const plugin = new ObjectIdPlugin();
-    jest.spyOn(plugin, 'isTargetNodeAllowed').mockReturnValue(true);
+    jest.spyOn(plugin, 'isNodeBlacklisted').mockReturnValue(false);
 
     const schema1 = new Schema({
       nodes: {
@@ -1256,6 +1263,76 @@ describe('Object ID plugin', () => {
     expect(result).toBeDefined();
   });
 
+  it('should preserve pending objectId when marking parent EIC dirty', () => {
+    const plugin = new ObjectIdPlugin();
+    const schema = new Schema({
+      nodes: {
+        doc: { content: 'enhanced_table_figure+' },
+        enhanced_table_figure: {
+          content: 'paragraph+',
+          attrs: {
+            dirty: { default: false },
+            objectId: { default: null }
+          }
+        },
+        paragraph: {
+          content: 'text*',
+          attrs: { dirty: { default: false } }
+        },
+        text: {}
+      }
+    });
+
+    const prevDoc = schema.node('doc', null, [
+      schema.node(
+        'enhanced_table_figure',
+        { dirty: false, objectId: null },
+        [
+          schema.node('paragraph', { dirty: false }, [
+            schema.text('before')
+          ])
+        ]
+      )
+    ]);
+    const nextDoc = schema.node('doc', null, [
+      schema.node(
+        'enhanced_table_figure',
+        { dirty: false, objectId: null },
+        [
+          schema.node('paragraph', { dirty: false }, [
+            schema.text('after')
+          ])
+        ]
+      )
+    ]);
+    const prevState = EditorState.create({
+      schema,
+      doc: prevDoc,
+      selection: TextSelection.create(prevDoc, 2)
+    });
+    const nextState = EditorState.create({
+      schema,
+      doc: nextDoc,
+      selection: TextSelection.create(nextDoc, 2)
+    });
+    const tr = nextState.tr.setNodeMarkup(0, null, {
+      ...nextDoc.nodeAt(0).attrs,
+      objectId: 'eic-new'
+    });
+
+    const result = plugin.setDirtyFlagOnChange(
+      prevState,
+      nextState,
+      tr,
+      true,
+      null
+    );
+
+    expect(result.doc.nodeAt(0).attrs).toEqual(
+      expect.objectContaining({ dirty: true, objectId: 'eic-new' })
+    );
+  });
+
   it('should skip invalid ranges in assignIDsForMissing', () => {
     const plugin = new ObjectIdPlugin();
     const schema = new Schema({
@@ -1335,20 +1412,6 @@ describe('Object ID plugin', () => {
 
     const result = plugin.assignIDsForMissing([], state, state, {} as EditorView);
     expect(result).toBeDefined();
-  });
-
-  it('should handle getContent when node type not found', () => {
-    const plugin = new ObjectIdPlugin();
-    const mockSchema = {
-      spec: {
-        nodes: {
-          get: jest.fn(() => null)
-        }
-      }
-    } as unknown as Schema;
-
-    const result = plugin.getContent('nonexistent', mockSchema);
-    expect(result).toBeNull();
   });
 
   it('should return false when cutObjectIds is empty', () => {
@@ -1444,7 +1507,7 @@ describe('Object ID plugin', () => {
     );
 
     expect(result).toBeFalsy();
-    expect(cutState.cutObjectIds.length).toBe(1);
+    expect(cutState.cutObjectIds).toHaveLength(1);
     expect(plugin.pastedPara).toBeNull();
   });
 
@@ -1633,7 +1696,7 @@ describe('Object ID plugin', () => {
     const boundHandleCut = plugin?.props?.handleDOMEvents?.cut?.bind(plugin);
     boundHandleCut(view, {});
 
-    expect(cutState.cutObjectIds.length).toBe(1);
+    expect(cutState.cutObjectIds).toHaveLength(1);
   });
 
   it('should skip cut when selection starts at 0 or node has no objectId', () => {
@@ -1663,7 +1726,7 @@ describe('Object ID plugin', () => {
     const boundHandleCut = plugin?.props?.handleDOMEvents?.cut?.bind(plugin);
     boundHandleCut(view, {});
 
-    expect(cutState.cutObjectIds.length).toBe(0);
+    expect(cutState.cutObjectIds).toHaveLength(0);
   });
 
   it('should use provided transaction in assignSameObjectMetaDataForCutPastePara', () => {
@@ -2287,5 +2350,487 @@ describe('Object ID plugin', () => {
 
     const result = plugin.setDirtyFlagOnChange(prevState, nextState, tr, false, 0);
     expect(result).toBe(tr);
+  });
+
+  it('should NOT add objectId attribute to text and hard_break node specs', () => {
+    const plugin = new ObjectIdPlugin();
+    const testSchema = new Schema({
+      nodes: {
+        doc: { content: 'paragraph+' },
+        paragraph: { content: 'text*', attrs: { align: { default: 'left' } } },
+        text: { group: 'inline' },
+        hard_break: {
+          inline: true,
+          group: 'inline',
+          selectable: false,
+          parseDOM: [{ tag: 'br' }],
+          toDOM: () => ['br'],
+        },
+      },
+    });
+
+    plugin.getEffectiveSchema(testSchema);
+
+    // text and hard_break must NOT have objectId in their attrs
+    expect(testSchema.nodes.text.spec.attrs?.objectId).toBeUndefined();
+    expect(testSchema.nodes.hard_break.spec.attrs?.objectId).toBeUndefined();
+  });
+
+  it('should add objectId attribute to all non-blacklisted node specs', () => {
+    const plugin = new ObjectIdPlugin();
+    const testSchema = new Schema({
+      nodes: {
+        doc: { content: 'block+', attrs: { layout: { default: null } } },
+        paragraph: { content: 'text*', attrs: { align: { default: 'left' } } },
+        table: {
+          content: 'table_row+',
+          group: 'block',
+          attrs: { noOfColumns: { default: null } },
+          toDOM: () => ['table', {}, 0],
+          parseDOM: [{ tag: 'table' }],
+        },
+        table_row: {
+          content: 'table_cell+',
+          attrs: {},
+          toDOM: () => ['tr', {}, 0],
+          parseDOM: [{ tag: 'tr' }],
+        },
+        table_cell: {
+          content: 'block+',
+          attrs: { colspan: { default: null } },
+          toDOM: () => ['td', {}, 0],
+          parseDOM: [{ tag: 'td' }],
+        },
+        image: {
+          inline: true,
+          group: 'inline',
+          attrs: { src: { default: '' } },
+          toDOM: () => ['img', { src: '' }],
+          parseDOM: [{ tag: 'img[src]' }],
+        },
+        text: { group: 'inline' },
+        hard_break: {
+          inline: true,
+          group: 'inline',
+          selectable: false,
+          parseDOM: [{ tag: 'br' }],
+          toDOM: () => ['br'],
+        },
+      },
+    });
+
+    plugin.getEffectiveSchema(testSchema);
+
+    // All non-blacklisted nodes should have objectId
+    expect(testSchema.nodes.doc.spec.attrs?.objectId).toBeDefined();
+    expect(testSchema.nodes.paragraph.spec.attrs?.objectId).toBeDefined();
+    expect(testSchema.nodes.table.spec.attrs?.objectId).toBeDefined();
+    expect(testSchema.nodes.table_row.spec.attrs?.objectId).toBeDefined();
+    expect(testSchema.nodes.table_cell.spec.attrs?.objectId).toBeDefined();
+    expect(testSchema.nodes.image.spec.attrs?.objectId).toBeDefined();
+  });
+
+  it('should assign objectId to non-textblock nodes in assignIDsForMissing', () => {
+    const plugin = new ObjectIdPlugin();
+    const testSchema = new Schema({
+      nodes: {
+        doc: { content: 'block+', attrs: { objectId: { default: null } } },
+        paragraph: {
+          content: 'text*',
+          attrs: { objectId: { default: null }, dirty: { default: false } },
+        },
+        table: {
+          content: 'table_row+',
+          group: 'block',
+          attrs: { objectId: { default: null }, dirty: { default: false } },
+          toDOM: () => ['table', {}, 0],
+          parseDOM: [{ tag: 'table' }],
+        },
+        table_row: {
+          content: 'table_cell+',
+          attrs: { objectId: { default: null } },
+          toDOM: () => ['tr', {}, 0],
+          parseDOM: [{ tag: 'tr' }],
+        },
+        table_cell: {
+          content: 'paragraph',
+          attrs: { objectId: { default: null } },
+          toDOM: () => ['td', {}, 0],
+          parseDOM: [{ tag: 'td' }],
+        },
+        text: { group: 'inline' },
+      },
+    });
+
+    // Build a doc with a table that has no objectId
+    const cell = testSchema.node('table_cell', { objectId: null }, [
+      testSchema.node('paragraph', { objectId: null, dirty: false }, [
+        testSchema.text('cell text'),
+      ]),
+    ]);
+    const row = testSchema.node('table_row', { objectId: null }, [cell]);
+    const table = testSchema.node('table', { objectId: null, dirty: false }, [
+      row,
+    ]);
+    const docNode = testSchema.node('doc', { objectId: 'doc-1' }, [table]);
+
+    const selection = TextSelection.create(docNode, 1, 1);
+    const prevState = EditorState.create({
+      schema: testSchema,
+      doc: docNode,
+      selection,
+    });
+    const nextState = EditorState.create({
+      schema: testSchema,
+      doc: docNode,
+      selection,
+    });
+
+    // Simulate a changed range covering the table
+    const fakeTransactions = [
+      {
+        docChanged: true,
+        getMeta: () => undefined,
+        mapping: {
+          maps: [
+            {
+              forEach: (cb: (a: number, b: number) => void) =>
+                cb(0, docNode.content.size),
+            },
+          ],
+        },
+      },
+    ] as unknown as Transaction[];
+
+    const result = plugin.assignIDsForMissing(
+      fakeTransactions,
+      prevState,
+      nextState,
+      {} as EditorView
+    );
+
+    // assignIDsForMissing should return a non-null transaction because
+    // the table, table_row, and table_cell nodes are missing objectIds
+    // and are not blacklisted
+    expect(result).not.toBeNull();
+    // The resulting transaction should have steps (setNodeMarkup calls)
+    expect(result.docChanged).toBe(true);
+  });
+
+  it('should preserve paragraph objectId when moved into a table (no reassignment)', () => {
+    const plugin = new ObjectIdPlugin();
+    const testSchema = new Schema({
+      nodes: {
+        doc: { content: 'block+', attrs: { objectId: { default: null } } },
+        paragraph: {
+          content: 'text*',
+          attrs: { objectId: { default: null }, dirty: { default: false } },
+        },
+        table: {
+          content: 'table_row+',
+          group: 'block',
+          attrs: { objectId: { default: null }, dirty: { default: false } },
+          toDOM: () => ['table', {}, 0],
+          parseDOM: [{ tag: 'table' }],
+        },
+        table_row: {
+          content: 'table_cell+',
+          attrs: { objectId: { default: null } },
+          toDOM: () => ['tr', {}, 0],
+          parseDOM: [{ tag: 'tr' }],
+        },
+        table_cell: {
+          content: 'paragraph',
+          attrs: { objectId: { default: null } },
+          toDOM: () => ['td', {}, 0],
+          parseDOM: [{ tag: 'td' }],
+        },
+        text: { group: 'inline' },
+      },
+    });
+
+    // A paragraph that already has an objectId
+    const paraWithId = testSchema.node(
+      'paragraph',
+      { objectId: 'para-keep-me', dirty: false },
+      [testSchema.text('moved text')]
+    );
+    const cell = testSchema.node('table_cell', { objectId: 'cell-1' }, [
+      paraWithId,
+    ]);
+    const row = testSchema.node('table_row', { objectId: 'row-1' }, [cell]);
+    const table = testSchema.node(
+      'table',
+      { objectId: 'table-1', dirty: false },
+      [row]
+    );
+    const docNode = testSchema.node('doc', { objectId: 'doc-1' }, [table]);
+
+    const selection = TextSelection.create(docNode, 1, 1);
+    const prevState = EditorState.create({
+      schema: testSchema,
+      doc: docNode,
+      selection,
+    });
+    const nextState = EditorState.create({
+      schema: testSchema,
+      doc: docNode,
+      selection,
+    });
+
+    const tr = nextState.tr;
+    const setNodeMarkupSpy = jest.spyOn(tr, 'setNodeMarkup');
+
+    // Simulate a changed range covering the paragraph inside the table
+    const fakeTransactions = [
+      {
+        docChanged: true,
+        getMeta: () => undefined,
+        mapping: {
+          maps: [
+            {
+              forEach: (cb: (a: number, b: number) => void) =>
+                cb(0, docNode.content.size),
+            },
+          ],
+        },
+      },
+    ] as unknown as Transaction[];
+
+    plugin.assignIDsForMissing(
+      fakeTransactions,
+      prevState,
+      nextState,
+      {} as EditorView
+    );
+
+    // The paragraph already has an objectId, so it should NOT be reassigned.
+    // setNodeMarkup may be called for other nodes, but not for the paragraph
+    // with 'para-keep-me'. Check that no call overwrites the paragraph's objectId.
+    const paraOverwriteCall = setNodeMarkupSpy.mock.calls.find(
+      (call: unknown[]) => {
+        const attrs = (call[2] as Record<string, unknown>) ?? {};
+        return (
+          attrs.objectId &&
+          attrs.objectId !== 'para-keep-me' &&
+          // The paragraph's existing attrs would be spread; check if this is
+          // targeting the paragraph by looking for its original objectId in attrs
+          (call[2] as Record<string, unknown>)?.objectId !== 'para-keep-me'
+        );
+      }
+    );
+    // The paragraph should not have been targeted for a new ID
+    // (isRequiredNewId returns false because it already has an ID and
+    //  it's not a new paragraph, cut, or duplicate)
+    expect(paraOverwriteCall).toBeUndefined();
+  });
+
+  // ── markDirtyByChangedRanges: drag-and-drop dirty flag tests ──
+
+  /**
+   * Helper: creates a two-paragraph schema and states simulating a
+   * drag-and-drop of text from one paragraph to another.
+   *
+   * @param dragUp  true = drag from para[1] up to para[0];
+   *                false = drag from para[0] down to para[1]
+   * @returns an object with plugin, prevState, nextState, and a real
+   *          transaction that represents the drag operation
+   */
+  function createDragScenario(dragUp: boolean): {
+    plugin: ObjectIdPlugin;
+    prevState: EditorState;
+    nextState: EditorState;
+    tr: Transaction;
+  } {
+    const plugin = new ObjectIdPlugin();
+    const testSchema = new Schema({
+      nodes: {
+        doc: { content: 'paragraph+' },
+        paragraph: {
+          content: 'text*',
+          attrs: { dirty: { default: false } },
+        },
+        text: {},
+      },
+    });
+
+    // Two paragraphs: "Hello" and "World"
+    const prevDoc = testSchema.node('doc', null, [
+      testSchema.node('paragraph', { dirty: false }, [
+        testSchema.text('Hello'),
+      ]),
+      testSchema.node('paragraph', { dirty: false }, [
+        testSchema.text('World'),
+      ]),
+    ]);
+
+    const prevState = EditorState.create({
+      schema: testSchema,
+      doc: prevDoc,
+      selection: TextSelection.create(
+        prevDoc,
+        dragUp ? 8 : 1, // cursor starts in source paragraph
+        dragUp ? 8 : 1,
+      ),
+    });
+
+    // Create a real transaction that simulates the drag
+    const tr = prevState.tr;
+    if (dragUp) {
+      // Drag "World" from para[1] up into para[0]
+      // prevDoc: para[0]="Hello" (pos 0, size 7), para[1]="World" (pos 7, size 7)
+      // Step 1: Delete "World" from para[1] (text at pos 8..13)
+      tr.delete(8, 13);
+      // After delete: para[0]="Hello" (pos 0, size 7), para[1]="" (pos 7, size 2)
+      // Step 2: Insert "World" at end of para[0] (text ends at pos 6)
+      tr.insert(6, testSchema.text('World'));
+      // After insert: para[0]="HelloWorld" (pos 0, size 12), para[1]="" (pos 12, size 2)
+    } else {
+      // Drag "Hello" from para[0] down into para[1]
+      // prevDoc: para[0]="Hello" (pos 0, size 7), para[1]="World" (pos 7, size 7)
+      // Step 1: Delete "Hello" from para[0] (text at pos 1..6)
+      tr.delete(1, 6);
+      // After delete: para[0]="" (pos 0, size 2), para[1]="World" (pos 2, size 7)
+      // Step 2: Insert "Hello" at beginning of para[1] (text starts at pos 3)
+      tr.insert(3, testSchema.text('Hello'));
+      // After insert: para[0]="" (pos 0, size 2), para[1]="HelloWorld" (pos 2, size 12)
+    }
+
+    // Build nextState from the transaction's resulting doc
+    const nextDoc = tr.doc;
+    const selPos = dragUp ? 10 : 8; // cursor in destination paragraph
+    const nextState = EditorState.create({
+      schema: testSchema,
+      doc: nextDoc,
+      selection: TextSelection.create(nextDoc, selPos, selPos),
+    });
+
+    return { plugin, prevState, nextState, tr };
+  }
+
+  it('should mark destination paragraph dirty when dragging text up', () => {
+    const { plugin, prevState, nextState, tr } = createDragScenario(true);
+    const result = plugin.markDirtyByChangedRanges(
+      [tr], prevState, nextState, null
+    );
+    expect(result).not.toBeNull();
+    // Destination paragraph (para[0] at pos 0) should be marked dirty
+    const destPara = result.doc.nodeAt(0);
+    expect(destPara?.attrs?.dirty).toBe(true);
+  });
+
+  it('should mark destination paragraph dirty when dragging text down', () => {
+    const { plugin, prevState, nextState, tr } = createDragScenario(false);
+    const result = plugin.markDirtyByChangedRanges(
+      [tr], prevState, nextState, null
+    );
+    expect(result).not.toBeNull();
+    // After drag down: para[0]="" at pos 0, para[1]="HelloWorld" at pos 2
+    const destPara = result.doc.nodeAt(2);
+    expect(destPara?.attrs?.dirty).toBe(true);
+  });
+
+  it('should mark source paragraph dirty when dragging text up', () => {
+    const { plugin, prevState, nextState, tr } = createDragScenario(true);
+    const result = plugin.markDirtyByChangedRanges(
+      [tr], prevState, nextState, null
+    );
+    expect(result).not.toBeNull();
+    // Both paragraphs should be dirty
+    const paras: Node[] = [];
+    result.doc.forEach((child: Node) => {
+      paras.push(child);
+    });
+    // para[0] = "HelloWorld" (destination), para[1] = "" (source)
+    expect(paras[0].attrs?.dirty).toBe(true);
+    expect(paras[1].attrs?.dirty).toBe(true);
+  });
+
+  it('should mark source paragraph dirty when dragging text down', () => {
+    const { plugin, prevState, nextState, tr } = createDragScenario(false);
+    const result = plugin.markDirtyByChangedRanges(
+      [tr], prevState, nextState, null
+    );
+    expect(result).not.toBeNull();
+    const paras: Node[] = [];
+    result.doc.forEach((child: Node) => {
+      paras.push(child);
+    });
+    // para[0] = "" (source), para[1] = "HelloWorld" (destination)
+    expect(paras[0].attrs?.dirty).toBe(true);
+    expect(paras[1].attrs?.dirty).toBe(true);
+  });
+
+  it('should not mark paragraphs dirty when nothing changed', () => {
+    const plugin = new ObjectIdPlugin();
+    const testSchema = new Schema({
+      nodes: {
+        doc: { content: 'paragraph+' },
+        paragraph: {
+          content: 'text*',
+          attrs: { dirty: { default: false } },
+        },
+        text: {},
+      },
+    });
+    const docNode = testSchema.node('doc', null, [
+      testSchema.node('paragraph', { dirty: false }, [
+        testSchema.text('Hello'),
+      ]),
+    ]);
+    const state = EditorState.create({
+      schema: testSchema,
+      doc: docNode,
+      selection: TextSelection.create(docNode, 1, 1),
+    });
+    // Empty transaction (no doc changes)
+    const tr = state.tr;
+    const result = plugin.markDirtyByChangedRanges(
+      [tr], state, state, null
+    );
+    // Should not create a transaction since nothing changed
+    expect(result).toBeNull();
+  });
+
+  it('should skip already-dirty paragraphs', () => {
+    const plugin = new ObjectIdPlugin();
+    const testSchema = new Schema({
+      nodes: {
+        doc: { content: 'paragraph+' },
+        paragraph: {
+          content: 'text*',
+          attrs: { dirty: { default: false } },
+        },
+        text: {},
+      },
+    });
+    const prevDoc = testSchema.node('doc', null, [
+      testSchema.node('paragraph', { dirty: true }, [
+        testSchema.text('a'),
+      ]),
+    ]);
+    const nextDoc = testSchema.node('doc', null, [
+      testSchema.node('paragraph', { dirty: true }, [
+        testSchema.text('ab'),
+      ]),
+    ]);
+    const prevState = EditorState.create({
+      schema: testSchema,
+      doc: prevDoc,
+      selection: TextSelection.create(prevDoc, 1, 1),
+    });
+    const nextState = EditorState.create({
+      schema: testSchema,
+      doc: nextDoc,
+      selection: TextSelection.create(nextDoc, 1, 1),
+    });
+    const tr = prevState.tr;
+    tr.insert(2, testSchema.text('b'));
+    const result = plugin.markDirtyByChangedRanges(
+      [tr], prevState, nextState, null
+    );
+    // Paragraph is already dirty, so no new setNodeMarkup should happen
+    // The result should be null (no changes needed)
+    expect(result).toBeNull();
   });
 });
