@@ -21,6 +21,7 @@ import {
   Slice,
   AttributeSpec,
   NodeType,
+  Fragment,
 } from 'prosemirror-model';
 const SPEC = 'spec';
 const ATTR_OBJID = 'objectId';
@@ -101,12 +102,43 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
 
         handlePaste(view, _event, slice) {
           const { cutObjectIds } = this.getState(view.state) || {};
-          if (this.getState(view.state)?.cutObjectIds?.length > 0) {
+          if (cutObjectIds?.length > 0) {
+            // First paste after a cut — this is a "move": preserve the
+            // original objectIds. cutObjectIds is fully cleared in
+            // appendTransaction after the paste, so any subsequent paste
+            // falls through to the copy+paste branch below and gets new IDs.
             (this as ObjectIdPlugin).pastedPara = slice;
             let tr = view.state.tr;
             const { selection } = view.state;
             const { from } = selection;
-            const node = tr.doc.nodeAt(from - 1);
+            // Resolve the block node that contains the paste cursor.
+            // The previous `nodeAt(from - 1)` assumed the cursor sat at the
+            // very start of a top-level paragraph, so `from - 1` resolved to
+            // the paragraph. When the cursor is mid-text (e.g. inside a
+            // table cell) `from - 1` resolves to a *text* node, and
+            // `setNodeMarkup` then calls `NodeType.create` with the text
+            // type, throwing `NodeType.create can't construct text nodes`.
+            // Walk up from the cursor to find the closest ancestor that
+            // carries an objectId attribute and is not a text node.
+            const $from = selection.$from;
+            const hasResolvedPos =
+              $from &&
+              typeof $from.depth === 'number' &&
+              typeof $from.node === 'function';
+            const parent = hasResolvedPos
+              ? findParentNodeClosestToPos(
+                  $from,
+                  (node: Node) =>
+                    !node.isText && !!node.attrs && ATTR_OBJID in node.attrs
+                )
+              : { node: tr.doc.nodeAt(from - 1), pos: from - 1 };
+            if (!parent?.node) {
+              // No suitable target block; let ProseMirror perform the
+              // default paste instead of crashing.
+              return false;
+            }
+            const node = parent.node;
+            const pos = parent.pos;
             const newattrs = { ...node.attrs };
             const index = cutObjectIds.findIndex(
               (obj) => obj.objectId === node.attrs?.objectId
@@ -119,13 +151,38 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
               newattrs.objectId = cutObjectIds[0].objectId;
               this.getState(view.state).cutObjectIds.shift();
             }
-            const pos = from - 1;
+            // Set the objectId on the target paragraph BEFORE inserting
+            // the pasted content. setNodeMarkup only changes attrs (no
+            // position shift), so the selection is still valid for
+            // replaceSelection below.
             tr = tr.setNodeMarkup(pos, undefined, newattrs);
-            if (cutObjectIds.length == 1) {
-              (this as ObjectIdPlugin).pastedPara = null;
-            }
-            tr = tr.setMeta('skipAppendTransaction', true);
+            // Insert the pasted content into the SAME transaction so that
+            // the objectId assignment and the paste are a single undo
+            // step. Previously these were two separate dispatches (the
+            // plugin's setNodeMarkup, then ProseMirror's default
+            // replaceSelection), which created two history entries per
+            // paste and broke undo.
+            tr = tr.replaceSelection(slice);
+            // Do NOT set skipAppendTransaction — appendTransaction must
+            // run to handle assignSameObjectMetaDataForCutPastePara (for
+            // multi-paragraph pastes) and other post-paste bookkeeping.
             view.dispatch(tr);
+            // Return true so ProseMirror does NOT also perform the default
+            // paste (we already inserted the content above).
+            return true;
+          }
+          // Copy+paste, or a second paste after cut (cutObjectIds was
+          // cleared in appendTransaction after the first paste). The
+          // pasted content carries objectIds from the source; assign new
+          // IDs to every node so they don't duplicate existing IDs in the
+          // document. This replaces the previous expensive full-document
+          // duplicate scan (isObjectIdDuplicate) that could also change
+          // the original paragraph's ID.
+          const newSlice = (this as ObjectIdPlugin).assignNewIdsToSlice(slice, view);
+          if (newSlice !== slice) {
+            const tr = view.state.tr.replaceSelection(newSlice);
+            view.dispatch(tr);
+            return true;
           }
           return false;
         },
@@ -163,6 +220,15 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
 
           if (this.pastedPara?.content?.childCount > 1) {
             tr = this.assignSameObjectMetaDataForCutPastePara(nextState, tr);
+          }
+          // Always clear cutObjectIds and pastedPara after a paste,
+          // regardless of whether all entries were matched above. This
+          // ensures the next paste does not take the cut+paste "move"
+          // branch (which would duplicate objectIds).
+          if (this.pastedPara) {
+            const st = this.getState(nextState);
+            if (st) st.cutObjectIds = [];
+            this.pastedPara = null;
           }
 
           tr = this.trackDeletedObjectId(prevState, nextState, tr);
@@ -246,8 +312,6 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
           trans = trans.setNodeMarkup(pos, undefined, newattrs);
         }
       });
-      this.getState(nextState).cutObjectIds = [];
-      this.pastedPara = null;
     }
     return trans;
   }
@@ -398,7 +462,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
   }
 
   createNewId(
-    node: Node,
+    _node: Node,
     objId: string,
     objIds: string[],
     view: EditorView,
@@ -411,20 +475,83 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     if (objId && view) {
       if (this.isNewParagraph(prevState, nextState, pos, view)) {
         required = true;
-      } else if (
-        this.isCut &&
-        this.getState(nextState).cutObjectIds.some(
-          (objId) => objId.objectId === node.attrs[ATTR_OBJID]
-        )
-      ) {
-        required = true;
-        this.isCut = false;
       } else {
         objIds.push(objId);
       }
     }
 
     return required;
+  }
+
+  /**
+   * Walks the pasted slice and assigns a fresh objectId to every node
+   * that carries one. Used for copy+paste (and second paste after cut)
+   * so that pasted content never duplicates an objectId already present
+   * in the document. This replaces the previous full-document
+   * `isObjectIdDuplicate` scan, which was expensive and could change the
+   * original paragraph's ID.
+   *
+   * Returns the original slice unchanged if no node had an objectId (or
+   * if the slice is not a real ProseMirror Slice), so that callers can
+   * detect "nothing to do" and let ProseMirror perform the default paste.
+   */
+  assignNewIdsToSlice(slice: Slice, view: EditorView): Slice {
+    if (!slice?.content || typeof slice.content.forEach !== 'function') {
+      return slice;
+    }
+    const { prefix, suffix } = this.getState(view.state) || {};
+    const newContent = this.assignNewIdsToFragment(slice.content, prefix, suffix);
+    if (newContent === slice.content) return slice;
+    return new Slice(newContent, slice.openStart, slice.openEnd);
+  }
+
+  private assignNewIdsToFragment(
+    fragment: Fragment,
+    prefix?: string,
+    suffix?: string
+  ): Fragment {
+    if (!fragment || typeof fragment.forEach !== 'function') {
+      return fragment;
+    }
+    const children: Node[] = [];
+    let modified = false;
+    fragment.forEach((node: Node) => {
+      if (this.isNodeBlacklisted(node)) {
+        children.push(node);
+        return;
+      }
+      // Recurse into children first.
+      const newChildContent =
+        node.content && node.content.size > 0
+          ? this.assignNewIdsToFragment(node.content, prefix, suffix)
+          : node.content;
+
+      if (node.attrs && ATTR_OBJID in node.attrs && !node.isText) {
+        const newId = createObjectId(prefix, suffix);
+        try {
+          children.push(
+            node.type.create(
+              { ...node.attrs, [ATTR_OBJID]: newId },
+              newChildContent,
+              node.marks
+            )
+          );
+          modified = true;
+        } catch {
+          // If create fails for any reason, keep the original node
+          // (with recursed content if that changed).
+          children.push(
+            newChildContent !== node.content ? node.copy(newChildContent) : node
+          );
+        }
+      } else if (newChildContent !== node.content) {
+        children.push(node.copy(newChildContent));
+        modified = true;
+      } else {
+        children.push(node);
+      }
+    });
+    return modified ? Fragment.from(children) : fragment;
   }
 
   nodeAssignment(state: EditorState): Record<string, unknown> {
@@ -791,6 +918,13 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
 
         const nextPara = nextState.doc.nodeAt(nextPos);
         const prevPara = prevState.doc.nodeAt(pos);
+
+        // The forward-mapped position may land on a boundary with no
+        // node (e.g. the paragraph was deleted and the position now
+        // points at the end of the parent/cell). There is nothing to
+        // mark dirty in that case, so skip it instead of letting
+        // `setNodeMarkup` throw `RangeError: No node at given position`.
+        if (!nextPara) return;
 
         const didChange = this.didNodeChange(prevPara, nextPara);
         if (!didChange) return;
