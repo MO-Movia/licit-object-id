@@ -1369,6 +1369,76 @@ describe('Object ID plugin', () => {
     expect(result).toBeDefined();
   });
 
+  it('should preserve pending objectId when marking parent EIC dirty', () => {
+    const plugin = new ObjectIdPlugin();
+    const schema = new Schema({
+      nodes: {
+        doc: { content: 'enhanced_table_figure+' },
+        enhanced_table_figure: {
+          content: 'paragraph+',
+          attrs: {
+            dirty: { default: false },
+            objectId: { default: null }
+          }
+        },
+        paragraph: {
+          content: 'text*',
+          attrs: { dirty: { default: false } }
+        },
+        text: {}
+      }
+    });
+
+    const prevDoc = schema.node('doc', null, [
+      schema.node(
+        'enhanced_table_figure',
+        { dirty: false, objectId: null },
+        [
+          schema.node('paragraph', { dirty: false }, [
+            schema.text('before')
+          ])
+        ]
+      )
+    ]);
+    const nextDoc = schema.node('doc', null, [
+      schema.node(
+        'enhanced_table_figure',
+        { dirty: false, objectId: null },
+        [
+          schema.node('paragraph', { dirty: false }, [
+            schema.text('after')
+          ])
+        ]
+      )
+    ]);
+    const prevState = EditorState.create({
+      schema,
+      doc: prevDoc,
+      selection: TextSelection.create(prevDoc, 2)
+    });
+    const nextState = EditorState.create({
+      schema,
+      doc: nextDoc,
+      selection: TextSelection.create(nextDoc, 2)
+    });
+    const tr = nextState.tr.setNodeMarkup(0, null, {
+      ...nextDoc.nodeAt(0).attrs,
+      objectId: 'eic-new'
+    });
+
+    const result = plugin.setDirtyFlagOnChange(
+      prevState,
+      nextState,
+      tr,
+      true,
+      null
+    );
+
+    expect(result.doc.nodeAt(0).attrs).toEqual(
+      expect.objectContaining({ dirty: true, objectId: 'eic-new' })
+    );
+  });
+
   it('should skip invalid ranges in assignIDsForMissing', () => {
     const plugin = new ObjectIdPlugin();
     const schema = new Schema({

@@ -21,6 +21,7 @@ import {
   Slice,
   AttributeSpec,
   NodeType,
+  Node as ProseMirrorNode,
   Fragment,
 } from 'prosemirror-model';
 const SPEC = 'spec';
@@ -54,6 +55,12 @@ export interface Ranges {
   from: number;
   to: number;
 }
+type FindParentNodeResult = {
+  pos: number;
+  start: number;
+  depth: number;
+  node: ProseMirrorNode;
+};
 
 export const ObjectIdPluginKey = new PluginKey('ObjectIdPlugin');
 
@@ -127,10 +134,10 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
               typeof $from.node === 'function';
             const parent = hasResolvedPos
               ? findParentNodeClosestToPos(
-                  $from,
-                  (node: Node) =>
-                    !node.isText && !!node.attrs && ATTR_OBJID in node.attrs
-                )
+                $from,
+                (node: Node) =>
+                  !node.isText && !!node.attrs && ATTR_OBJID in node.attrs
+              )
               : { node: tr.doc.nodeAt(from - 1), pos: from - 1 };
             if (!parent?.node) {
               // No suitable target block; let ProseMirror perform the
@@ -144,7 +151,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
               (obj) => obj.objectId === node.attrs?.objectId
             );
             newattrs.objectMetaData = cutObjectIds[0].objectMetaData;
-            if (index !== -1) {
+            if (index >= 0) {
               newattrs.objectId = node.attrs.objectId;
               this.getState(view.state).cutObjectIds.splice(index, 1);
             } else {
@@ -235,7 +242,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
           tr = this.setDirtyFlagOnChange(prevState, nextState, tr, docChanged, capcoPos);
           tr = this.markDirtyByChangedRanges(regularTransactions, prevState, nextState, tr);
         }
-        if (tr && nextState.tr) {
+        if (tr) {
           tr.storedMarks = nextState.tr.storedMarks;
         }
 
@@ -541,14 +548,14 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
           // If create fails for any reason, keep the original node
           // (with recursed content if that changed).
           children.push(
-            newChildContent !== node.content ? node.copy(newChildContent) : node
+            newChildContent === node.content ? node : node.copy(newChildContent)
           );
         }
-      } else if (newChildContent !== node.content) {
+      } else if (newChildContent === node.content) {
+        children.push(node);
+      } else {
         children.push(node.copy(newChildContent));
         modified = true;
-      } else {
-        children.push(node);
       }
     });
     return modified ? Fragment.from(children) : fragment;
@@ -676,7 +683,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     );
   }
 
-  
+
   private normalizeNodeForDirtyCompare(node: Node | null | undefined) {
     if (!node) {
       return null;
@@ -725,35 +732,9 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     ) {
       return tr;
     }
-    let para = null;
-    let para1 = null;
-    if (capcoPos != null) {
-      const capcoPositions = Array.isArray(capcoPos) ? capcoPos : [capcoPos];
-
-      capcoPositions.forEach((pos) => {
-        para = nextState.doc.nodeAt(pos);
-        para1 = prevState.doc.nodeAt(pos);
-        if (para) {
-          isDirty = !!para1?.attrs.dirty;
-          const didChange = this.didNodeChange(para1, para);
-          if (para && docChanged && didChange && (!isDirty && !para.attrs.dirty)) {
-            tr ??= nextState.tr;
-            // Read current attrs from tr.doc if tr has been modified by
-            // assignIDsForMissing (e.g. to add objectId). Using nextState.doc
-            // attrs would overwrite that objectId.
-            const currentAttrs = tr.docChanged
-              ? (tr.doc.nodeAt(pos)?.attrs ?? para.attrs)
-              : para.attrs;
-            tr = tr.setNodeMarkup(pos, null, {
-              ...currentAttrs,
-              dirty: true,
-            });
-          }
-        }
-      });
-
-    }
-    else {
+    if (capcoPos == null) {
+      let para: FindParentNodeResult | null = null;
+      let para1: FindParentNodeResult | null = null;
       para = this.getParentBySelection(
         nextState.doc,
         selection,
@@ -767,7 +748,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
       );
 
       if (tr) {
-        let para2 = null;
+        let para2: FindParentNodeResult | null = null;
         const curSelection = tr['curSelection'];
         if (curSelection) {
           para2 = this.getParentBySelection(
@@ -787,40 +768,123 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
         // on document load the last paragraph becomes dirty, to avoid that we check the position between the two paragraphs
         isOnLoad = para.pos - para1.pos > 3;
       }
-      const didChange = this.didNodeChange(para1?.node, para?.node);
-      if (para && docChanged && didChange && !isOnLoad && (!isDirty && !para.node.attrs.dirty)) {
-        tr ??= nextState.tr;
-        // Read current attrs from tr.doc if tr has been modified by
-        // assignIDsForMissing (e.g. to add objectId).
-        const currentParaAttrs = tr.docChanged
-          ? (tr.doc.nodeAt(para.pos)?.attrs ?? para.node.attrs)
-          : para.node.attrs;
-        tr = tr.setNodeMarkup(para.pos, null, {
-          ...currentParaAttrs,
-          dirty: true,
-        });
-      }
+      tr = this.setDirtyFlagOnChangeForTableParagraph(
+        nextState,
+        tr,
+        docChanged,
+        isDirty,
+        isOnLoad,
+        para,
+        para1
+      );
+    } else {
+      tr = this.setDirtyFlagOnChangeForParagraph(
+        prevState,
+        nextState,
+        tr,
+        docChanged,
+        capcoPos
+      );
+    }
+    return tr;
+  }
+
+  setDirtyFlagOnChangeForParagraph(
+    prevState: EditorState,
+    nextState: EditorState,
+    tr: Transaction,
+    docChanged: boolean,
+    capcoPos: number | number[] | null
+  ): Transaction {
+    const capcoPositions = Array.isArray(capcoPos) ? capcoPos : [capcoPos];
+    let para = null;
+    let para1 = null;
+    capcoPositions.forEach((pos) => {
+      para = nextState.doc.nodeAt(pos);
+      para1 = prevState.doc.nodeAt(pos);
       if (para) {
-        const parentTable = this.getParentByPosition(
-          nextState.doc,
-          para.pos,
-          schema.nodes.table
-        );
-        if (parentTable && docChanged && !parentTable.node.attrs.dirty) {
+        const isDirty = !!para1?.attrs.dirty;
+        const didChange = this.didNodeChange(para1, para);
+        if (
+          docChanged &&
+          didChange &&
+          !isDirty &&
+          !para.attrs.dirty
+        ) {
           tr ??= nextState.tr;
-          // Same fix as above: read current attrs from tr.doc if tr has
-          // been modified, otherwise assignIDsForMissing's objectId gets
-          // overwritten.
-          const currentTableAttrs = tr.docChanged
-            ? (tr.doc.nodeAt(parentTable.pos)?.attrs ??
-              parentTable.node.attrs)
-            : parentTable.node.attrs;
-          tr = tr.setNodeMarkup(parentTable.pos, null, {
-            ...currentTableAttrs,
+          const currentAttrs = tr.docChanged
+            ? (tr.doc.nodeAt(pos)?.attrs ?? para.attrs)
+            : para.attrs;
+          tr = tr.setNodeMarkup(pos, null, {
+            ...currentAttrs,
             dirty: true,
           });
         }
       }
+    });
+    return tr;
+  }
+
+  setDirtyFlagOnChangeForTableParagraph(
+    nextState: EditorState,
+    tr: Transaction,
+    docChanged: boolean,
+    isDirty: boolean,
+    isOnLoad: boolean,
+    para: FindParentNodeResult | null,
+    para1: FindParentNodeResult | null
+  ): Transaction {
+    const { schema } = nextState;
+    const didChange = this.didNodeChange(para1?.node, para?.node);
+    if (
+      para &&
+      docChanged &&
+      didChange &&
+      !isOnLoad &&
+      !isDirty &&
+      !para.node.attrs.dirty
+    ) {
+      tr ??= nextState.tr;
+      const currentParaAttrs = tr.docChanged
+        ? (tr.doc.nodeAt(para.pos)?.attrs ?? para.node.attrs)
+        : para.node.attrs;
+      tr = tr.setNodeMarkup(para.pos, null, {
+        ...currentParaAttrs,
+        dirty: true,
+      });
+    }
+    if (!para) {
+      return tr;
+    }
+    const parentTable = this.getParentByPosition(
+      nextState.doc,
+      para.pos,
+      schema.nodes.table
+    );
+    const parentEic = this.getParentByPosition(
+      nextState.doc,
+      para.pos,
+      schema.nodes.enhanced_table_figure
+    );
+    if (parentTable && docChanged && !parentTable.node.attrs.dirty) {
+      tr ??= nextState.tr;
+      const currentTableAttrs = tr.docChanged
+        ? (tr.doc.nodeAt(parentTable.pos)?.attrs ?? parentTable.node.attrs)
+        : parentTable.node.attrs;
+      tr = tr.setNodeMarkup(parentTable.pos, null, {
+        ...currentTableAttrs,
+        dirty: true,
+      });
+    }
+    if (parentEic && docChanged && !parentEic.node.attrs.dirty) {
+      tr ??= nextState.tr;
+      const currentEicAttrs = tr.docChanged
+        ? (tr.doc.nodeAt(parentEic.pos)?.attrs ?? parentEic.node.attrs)
+        : parentEic.node.attrs;
+      tr = tr.setNodeMarkup(parentEic.pos, null, {
+        ...currentEicAttrs,
+        dirty: true,
+      });
     }
     return tr;
   }
@@ -868,7 +932,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
         // corresponding paragraph (if any) for comparison.
         const prevPos = this.mapPosBackward(transactions, pos);
         const prevPara =
-          prevPos != null ? prevState.doc.nodeAt(prevPos) : null;
+          prevPos == null ? null : prevState.doc.nodeAt(prevPos);
         const nextPara = nextState.doc.nodeAt(pos);
 
         // Mark dirty if the paragraph content actually changed
