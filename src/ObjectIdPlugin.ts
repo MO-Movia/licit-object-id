@@ -21,7 +21,7 @@ import {
   Slice,
   AttributeSpec,
   NodeType,
-  Node as ProseMirrorNode
+  Node as ProseMirrorNode,
   Fragment,
 } from 'prosemirror-model';
 const SPEC = 'spec';
@@ -134,10 +134,10 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
               typeof $from.node === 'function';
             const parent = hasResolvedPos
               ? findParentNodeClosestToPos(
-                  $from,
-                  (node: Node) =>
-                    !node.isText && !!node.attrs && ATTR_OBJID in node.attrs
-                )
+                $from,
+                (node: Node) =>
+                  !node.isText && !!node.attrs && ATTR_OBJID in node.attrs
+              )
               : { node: tr.doc.nodeAt(from - 1), pos: from - 1 };
             if (!parent?.node) {
               // No suitable target block; let ProseMirror perform the
@@ -242,7 +242,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
           tr = this.setDirtyFlagOnChange(prevState, nextState, tr, docChanged, capcoPos);
           tr = this.markDirtyByChangedRanges(regularTransactions, prevState, nextState, tr);
         }
-        if (tr && nextState.tr) {
+        if (tr) {
           tr.storedMarks = nextState.tr.storedMarks;
         }
 
@@ -548,14 +548,14 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
           // If create fails for any reason, keep the original node
           // (with recursed content if that changed).
           children.push(
-            newChildContent !== node.content ? node.copy(newChildContent) : node
+            newChildContent === node.content ? node : node.copy(newChildContent)
           );
         }
-      } else if (newChildContent !== node.content) {
+      } else if (newChildContent === node.content) {
+        children.push(node);
+      } else {
         children.push(node.copy(newChildContent));
         modified = true;
-      } else {
-        children.push(node);
       }
     });
     return modified ? Fragment.from(children) : fragment;
@@ -732,15 +732,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
     ) {
       return tr;
     }
-    if (capcoPos != null) {
-      tr = this.setDirtyFlagOnChangeForParagraph(
-        prevState,
-        nextState,
-        tr,
-        docChanged,
-        capcoPos
-      );
-    } else {
+    if (capcoPos == null) {
       let para: FindParentNodeResult | null = null;
       let para1: FindParentNodeResult | null = null;
       para = this.getParentBySelection(
@@ -784,6 +776,14 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
         isOnLoad,
         para,
         para1
+      );
+    } else {
+      tr = this.setDirtyFlagOnChangeForParagraph(
+        prevState,
+        nextState,
+        tr,
+        docChanged,
+        capcoPos
       );
     }
     return tr;
@@ -853,37 +853,38 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
         dirty: true,
       });
     }
-    if (para) {
-      const parentTable = this.getParentByPosition(
-        nextState.doc,
-        para.pos,
-        schema.nodes.table
-      );
-      const parentEic = this.getParentByPosition(
-        nextState.doc,
-        para.pos,
-        schema.nodes.enhanced_table_figure
-      );
-      if (parentTable && docChanged && !parentTable.node.attrs.dirty) {
-        tr ??= nextState.tr;
-        const currentTableAttrs = tr.docChanged
-          ? (tr.doc.nodeAt(parentTable.pos)?.attrs ?? parentTable.node.attrs)
-          : parentTable.node.attrs;
-        tr = tr.setNodeMarkup(parentTable.pos, null, {
-          ...currentTableAttrs,
-          dirty: true,
-        });
-      }
-      if (parentEic && docChanged && !parentEic.node.attrs.dirty) {
-        tr ??= nextState.tr;
-        const currentEicAttrs = tr.docChanged
-          ? (tr.doc.nodeAt(parentEic.pos)?.attrs ?? parentEic.node.attrs)
-          : parentEic.node.attrs;
-        tr = tr.setNodeMarkup(parentEic.pos, null, {
-          ...currentEicAttrs,
-          dirty: true,
-        });
-      }
+    if (!para) {
+      return tr;
+    }
+    const parentTable = this.getParentByPosition(
+      nextState.doc,
+      para.pos,
+      schema.nodes.table
+    );
+    const parentEic = this.getParentByPosition(
+      nextState.doc,
+      para.pos,
+      schema.nodes.enhanced_table_figure
+    );
+    if (parentTable && docChanged && !parentTable.node.attrs.dirty) {
+      tr ??= nextState.tr;
+      const currentTableAttrs = tr.docChanged
+        ? (tr.doc.nodeAt(parentTable.pos)?.attrs ?? parentTable.node.attrs)
+        : parentTable.node.attrs;
+      tr = tr.setNodeMarkup(parentTable.pos, null, {
+        ...currentTableAttrs,
+        dirty: true,
+      });
+    }
+    if (parentEic && docChanged && !parentEic.node.attrs.dirty) {
+      tr ??= nextState.tr;
+      const currentEicAttrs = tr.docChanged
+        ? (tr.doc.nodeAt(parentEic.pos)?.attrs ?? parentEic.node.attrs)
+        : parentEic.node.attrs;
+      tr = tr.setNodeMarkup(parentEic.pos, null, {
+        ...currentEicAttrs,
+        dirty: true,
+      });
     }
     return tr;
   }
@@ -931,7 +932,7 @@ export class ObjectIdPlugin extends Plugin<IdConfig> {
         // corresponding paragraph (if any) for comparison.
         const prevPos = this.mapPosBackward(transactions, pos);
         const prevPara =
-          prevPos != null ? prevState.doc.nodeAt(prevPos) : null;
+          prevPos == null ? null : prevState.doc.nodeAt(prevPos);
         const nextPara = nextState.doc.nodeAt(pos);
 
         // Mark dirty if the paragraph content actually changed
